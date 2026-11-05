@@ -147,8 +147,13 @@ float32_t singlePhaseInverterFollowing::calculateDuty(float32_t vgrid_meas, floa
     _theta = fmodf(next_theta, 2.0F * PI);
     if (_theta < 0.0F) _theta += 2.0F * PI;
 
-    _Vab = _sogi_v.calc(vgrid_meas, _w_ref);
-    _Iab = _sogi_i.calc(igrid_meas, _w_ref);
+    // Tune the SOGI to the PLL estimate so its quadrature output stays balanced
+    // off-nominal; at a fixed w_ref, Vq carries a 2w ripple far above the sync
+    // tolerance. The estimate is clamped to the qualification window (±5 %) so
+    // the SOGI-PLL loop cannot run away during lock transients.
+    const float32_t w_sogi = fminf(fmaxf(_w, 0.95F * _w_ref), 1.05F * _w_ref);
+    _Vab = _sogi_v.calc(vgrid_meas, w_sogi);
+    _Iab = _sogi_i.calc(igrid_meas, w_sogi);
 
     _Vdq = Transform::rotation_to_dqo(_Vab, _theta);
     _Idq = Transform::rotation_to_dqo(_Iab, _theta);
