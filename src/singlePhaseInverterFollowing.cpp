@@ -294,7 +294,7 @@ void singlePhaseInverterFollowing::setWRef(float32_t w_ref) {
     _w_ref = w_ref;
     resetSyncWindow();  // the window spans one period of the new reference
     if (_mode == VSI_VOLTAGE_SYNC) _sync_delay_counter = 0;
-    if (_mode == VSI_PWM_SETTLE) _pwm_settle_cycles = 0.0;
+    if (_mode == VSI_PWM_SETTLE) _pwm_settle_cycles = 0.0F;
 }
 
 vsi_mode_t singlePhaseInverterFollowing::getMode() const {
@@ -332,7 +332,7 @@ void singlePhaseInverterFollowing::setGridConnected(bool connected) {
 void singlePhaseInverterFollowing::setPwmEnabled(bool enabled) {
     _pwm_enabled = enabled;
     if (!enabled) {
-        _pwm_settle_cycles = 0.0;
+        _pwm_settle_cycles = 0.0F;
     }
 }
 
@@ -349,7 +349,7 @@ float32_t singlePhaseInverterFollowing::getPwmStartDutyTolerance() const {
 void singlePhaseInverterFollowing::setPwmSettleCycles(uint16_t cycles) {
     if (_pwm_settle_min_cycles != cycles) {
         _pwm_settle_min_cycles = cycles;
-        _pwm_settle_cycles = 0.0;
+        _pwm_settle_cycles = 0.0F;
     }
 }
 
@@ -420,7 +420,7 @@ void singlePhaseInverterFollowing::enterMode(vsi_mode_t mode) {
     _mode = mode;
     _state_elapsed = 0.0F;
     _sync_delay_counter = 0;
-    _pwm_settle_cycles = 0.0;
+    _pwm_settle_cycles = 0.0F;
     if (mode == VSI_PWM_WAIT) _pwm_enabled = false;
 }
 
@@ -472,11 +472,11 @@ void singlePhaseInverterFollowing::updateMode() {
             tripFault(VSI_FAULT_EXTERNAL);
         } else if (_pwm_enabled && _pwm_settle_min_cycles > 0) {
             // Integrate unwrapped PLL phase over the configured number of periods.
-            _pwm_settle_cycles += static_cast<double>(_w) * _Ts / (2.0 * PI);
-            if (_pwm_settle_cycles >= _pwm_settle_min_cycles)
+            _pwm_settle_cycles += _w * _Ts * (0.5F / PI);
+            if (_pwm_settle_cycles >= static_cast<float32_t>(_pwm_settle_min_cycles))
                 enterMode(VSI_GRID_CONNECT);
         } else {
-            _pwm_settle_cycles = 0.0;
+            _pwm_settle_cycles = 0.0F;
         }
         break;
     case VSI_GRID_CONNECT:

@@ -360,7 +360,7 @@ private:
     bool _grid_connected = false;
     bool _pwm_enabled = false;
     float32_t _pwm_start_duty_tolerance = 0.01F;
-    double _pwm_settle_cycles = 0.0;
+    float32_t _pwm_settle_cycles = 0.0F; ///< Grid periods elapsed in PWM_SETTLE (single precision: the M4 FPU has no double).
     uint16_t _pwm_settle_min_cycles = 10; ///< Zero holds the relay open indefinitely.
     bool _resync_requested = false;
     float32_t _state_elapsed = 0.0F;
