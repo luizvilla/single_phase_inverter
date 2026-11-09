@@ -550,19 +550,9 @@ void singlePhaseInverterFollowing::resetSyncWindow() {
     _sync_win_age = 0;
     _sync_win_full = false;
     _sync_sum_vd = _sync_sum_vq = _sync_sum_w = 0.0F;
+    _sync_shadow_vd = _sync_shadow_vq = _sync_shadow_w = 0.0F;
     _Vdq_avg = {};
     _w_avg = 0.0F;
-}
-
-void singlePhaseInverterFollowing::resumSyncWindow() {
-    _sync_sum_vd = _sync_sum_vq = _sync_sum_w = 0.0F;
-    const uint16_t n = _sync_win_count < _sync_win_len ? _sync_win_count : _sync_win_len;
-    for (uint16_t k = 1; k <= n; ++k) {
-        const uint16_t i = static_cast<uint16_t>((_sync_win_pos + SYNC_WINDOW_MAX - k) % SYNC_WINDOW_MAX);
-        _sync_sum_vd += _sync_win_vd[i];
-        _sync_sum_vq += _sync_win_vq[i];
-        _sync_sum_w += _sync_win_w[i];
-    }
 }
 
 void singlePhaseInverterFollowing::updateSyncWindow() {
@@ -579,6 +569,9 @@ void singlePhaseInverterFollowing::updateSyncWindow() {
     _sync_sum_vd += _Vdq.d;
     _sync_sum_vq += _Vdq.q;
     _sync_sum_w += _w;
+    _sync_shadow_vd += _Vdq.d;
+    _sync_shadow_vq += _Vdq.q;
+    _sync_shadow_w += _w;
     _sync_win_pos = static_cast<uint16_t>((_sync_win_pos + 1) % SYNC_WINDOW_MAX);
     if (_sync_win_count < SYNC_WINDOW_MAX) ++_sync_win_count;
     if (_sync_win_count >= _sync_win_len) _sync_win_full = true;
@@ -586,12 +579,33 @@ void singlePhaseInverterFollowing::updateSyncWindow() {
     const float32_t inv = 1.0F / static_cast<float32_t>(n);
     _Vdq_avg = {_sync_sum_vd * inv, _sync_sum_vq * inv, 0.0F};
     _w_avg = _sync_sum_w * inv;
-    // Once per period: follow the averaged frequency, and recompute the sums exactly
-    // (float rounding cannot accumulate).
+    // Once per period: the shadow sums hold exactly the last _sync_win_len samples, so
+    // they replace the running sums (float rounding cannot accumulate); then the window
+    // follows the averaged frequency. A length change is exact from the next period on.
     if (++_sync_win_age >= _sync_win_len) {
         _sync_win_age = 0;
-        if (_sync_win_full) _sync_win_len = syncWindowLength(_w_avg);
-        resumSyncWindow();
+        if (_sync_win_count >= _sync_win_len) {
+            _sync_sum_vd = _sync_shadow_vd;
+            _sync_sum_vq = _sync_shadow_vq;
+            _sync_sum_w = _sync_shadow_w;
+        }
+        _sync_shadow_vd = _sync_shadow_vq = _sync_shadow_w = 0.0F;
+        if (_sync_win_full) {
+            const uint16_t len = syncWindowLength(_w_avg);
+            if (len != _sync_win_len) {
+                // Resize: adjust the running sums by the samples entering or leaving.
+                while (_sync_win_len < len && _sync_win_len < _sync_win_count) {
+                    const uint16_t i = static_cast<uint16_t>((_sync_win_pos + SYNC_WINDOW_MAX - _sync_win_len - 1) % SYNC_WINDOW_MAX);
+                    _sync_sum_vd += _sync_win_vd[i]; _sync_sum_vq += _sync_win_vq[i]; _sync_sum_w += _sync_win_w[i];
+                    ++_sync_win_len;
+                }
+                while (_sync_win_len > len) {
+                    const uint16_t i = static_cast<uint16_t>((_sync_win_pos + SYNC_WINDOW_MAX - _sync_win_len) % SYNC_WINDOW_MAX);
+                    _sync_sum_vd -= _sync_win_vd[i]; _sync_sum_vq -= _sync_win_vq[i]; _sync_sum_w -= _sync_win_w[i];
+                    --_sync_win_len;
+                }
+            }
+        }
         const uint16_t m = _sync_win_count < _sync_win_len ? _sync_win_count : _sync_win_len;
         const float32_t invm = 1.0F / static_cast<float32_t>(m);
         _Vdq_avg = {_sync_sum_vd * invm, _sync_sum_vq * invm, 0.0F};

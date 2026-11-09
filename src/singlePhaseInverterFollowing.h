@@ -383,8 +383,12 @@ private:
     bool _sync_win_full = false;  ///< The window has held one full period at least once.
     /** @brief Window length for a frequency: one period, within [1, SYNC_WINDOW_MAX]. */
     uint16_t syncWindowLength(float32_t w) const;
-    /** @brief Recompute the sums exactly over the last _sync_win_len samples. */
-    void resumSyncWindow();
+    /* Shadow sums: the same samples accumulated from the start of the current period;
+     * at the end of each period they replace the running sums, which removes float drift
+     * at constant cost per call (no O(window) loop in the control task). */
+    float32_t _sync_shadow_vd = 0.0F;
+    float32_t _sync_shadow_vq = 0.0F;
+    float32_t _sync_shadow_w = 0.0F;
     float32_t _sync_sum_vd = 0.0F;
     float32_t _sync_sum_vq = 0.0F;
     float32_t _sync_sum_w = 0.0F;
