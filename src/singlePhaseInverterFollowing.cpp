@@ -50,6 +50,8 @@ int8_t singlePhaseInverterFollowing::init(float32_t V_bus, float32_t grid_Vpk, f
     _w = grid_w0;
     _w_ref = grid_w0;
     _Ts = Ts;
+    _sync_voltage_tolerance = 0.01F * grid_Vpk;
+    resetSyncWindow();
     _theta = 0;
     _V_bus = V_bus;
 
@@ -163,6 +165,7 @@ float32_t singlePhaseInverterFollowing::calculateDuty(float32_t vgrid_meas, floa
         tripFault(VSI_FAULT_INVALID_CONTROL_STATE);
         return _duty_cycle;
     }
+    updateSyncWindow();
 
     updateMode();
     if (_mode == VSI_RUN || _mode == VSI_GRID_CONNECTED ||
@@ -289,6 +292,7 @@ void singlePhaseInverterFollowing::setWRef(float32_t w_ref) {
         return;
     }
     _w_ref = w_ref;
+    resetSyncWindow();  // the window spans one period of the new reference
     if (_mode == VSI_VOLTAGE_SYNC) _sync_delay_counter = 0;
     if (_mode == VSI_PWM_SETTLE) _pwm_settle_cycles = 0.0;
 }
@@ -523,8 +527,86 @@ void singlePhaseInverterFollowing::updateMode() {
 }
 
 bool singlePhaseInverterFollowing::synchronizationAligned() const {
-    return _initialized && _grid_quality_good &&
-           _Vdq.d > 0.9F * _grid_Vpk && _Vdq.d < 1.1F * _grid_Vpk &&
-           fabsf(_Vdq.q) < _sync_voltage_tolerance &&
-           fabsf(_w - _w_ref) < 0.05F * _w_ref;
+    // Judged on one-period averages (luizvilla/Core#7): instantaneous Vdq and w carry the
+    // ripple of the grid harmonics and of any measurement offset.
+    return _initialized && _grid_quality_good && isSyncWindowFull() &&
+           _Vdq_avg.d > 0.9F * _grid_Vpk && _Vdq_avg.d < 1.1F * _grid_Vpk &&
+           fabsf(_Vdq_avg.q) < _sync_voltage_tolerance &&
+           fabsf(_w_avg - _w_ref) < 0.05F * _w_ref;
+}
+
+uint16_t singlePhaseInverterFollowing::syncWindowLength(float32_t w) const {
+    const float32_t samples = (w > 0.0F && _Ts > 0.0F) ? 2.0F * PI / (w * _Ts) : 1.0F;
+    long len = lroundf(samples);
+    if (len < 1) len = 1;
+    if (len > SYNC_WINDOW_MAX) len = SYNC_WINDOW_MAX;
+    return static_cast<uint16_t>(len);
+}
+
+void singlePhaseInverterFollowing::resetSyncWindow() {
+    _sync_win_len = syncWindowLength(_w_ref);
+    _sync_win_pos = 0;
+    _sync_win_count = 0;
+    _sync_win_age = 0;
+    _sync_win_full = false;
+    _sync_sum_vd = _sync_sum_vq = _sync_sum_w = 0.0F;
+    _Vdq_avg = {};
+    _w_avg = 0.0F;
+}
+
+void singlePhaseInverterFollowing::resumSyncWindow() {
+    _sync_sum_vd = _sync_sum_vq = _sync_sum_w = 0.0F;
+    const uint16_t n = _sync_win_count < _sync_win_len ? _sync_win_count : _sync_win_len;
+    for (uint16_t k = 1; k <= n; ++k) {
+        const uint16_t i = static_cast<uint16_t>((_sync_win_pos + SYNC_WINDOW_MAX - k) % SYNC_WINDOW_MAX);
+        _sync_sum_vd += _sync_win_vd[i];
+        _sync_sum_vq += _sync_win_vq[i];
+        _sync_sum_w += _sync_win_w[i];
+    }
+}
+
+void singlePhaseInverterFollowing::updateSyncWindow() {
+    // Drop the sample leaving the window (the one _sync_win_len steps back), then add the new one.
+    if (_sync_win_count >= _sync_win_len) {
+        const uint16_t old = static_cast<uint16_t>((_sync_win_pos + SYNC_WINDOW_MAX - _sync_win_len) % SYNC_WINDOW_MAX);
+        _sync_sum_vd -= _sync_win_vd[old];
+        _sync_sum_vq -= _sync_win_vq[old];
+        _sync_sum_w -= _sync_win_w[old];
+    }
+    _sync_win_vd[_sync_win_pos] = _Vdq.d;
+    _sync_win_vq[_sync_win_pos] = _Vdq.q;
+    _sync_win_w[_sync_win_pos] = _w;
+    _sync_sum_vd += _Vdq.d;
+    _sync_sum_vq += _Vdq.q;
+    _sync_sum_w += _w;
+    _sync_win_pos = static_cast<uint16_t>((_sync_win_pos + 1) % SYNC_WINDOW_MAX);
+    if (_sync_win_count < SYNC_WINDOW_MAX) ++_sync_win_count;
+    if (_sync_win_count >= _sync_win_len) _sync_win_full = true;
+    const uint16_t n = _sync_win_count < _sync_win_len ? _sync_win_count : _sync_win_len;
+    const float32_t inv = 1.0F / static_cast<float32_t>(n);
+    _Vdq_avg = {_sync_sum_vd * inv, _sync_sum_vq * inv, 0.0F};
+    _w_avg = _sync_sum_w * inv;
+    // Once per period: follow the averaged frequency, and recompute the sums exactly
+    // (float rounding cannot accumulate).
+    if (++_sync_win_age >= _sync_win_len) {
+        _sync_win_age = 0;
+        if (_sync_win_full) _sync_win_len = syncWindowLength(_w_avg);
+        resumSyncWindow();
+        const uint16_t m = _sync_win_count < _sync_win_len ? _sync_win_count : _sync_win_len;
+        const float32_t invm = 1.0F / static_cast<float32_t>(m);
+        _Vdq_avg = {_sync_sum_vd * invm, _sync_sum_vq * invm, 0.0F};
+        _w_avg = _sync_sum_w * invm;
+    }
+}
+
+dqo_t singlePhaseInverterFollowing::getVdqAverage() const {
+    return isSyncWindowFull() ? _Vdq_avg : dqo_t{};
+}
+
+float32_t singlePhaseInverterFollowing::getwAverage() const {
+    return isSyncWindowFull() ? _w_avg : 0.0F;
+}
+
+bool singlePhaseInverterFollowing::isSyncWindowFull() const {
+    return _sync_win_full && _sync_win_count >= _sync_win_len;
 }

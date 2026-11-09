@@ -90,9 +90,17 @@ connection always passes through one zero-current GRID_CONNECTED control step.
 `requestDisconnect()` requests disconnection. Any reference ramp, including a
 planned power reduction before disconnecting, belongs to the caller.
 
-Synchronization requires positive d voltage within 10% of the configured grid
-peak, frequency within 5% of the frequency reference, and `abs(Vq) < 0.1 V` for
-1000 consecutive control calls (100 ms at 10 kHz). A failed sample resets the
+Synchronization requires, on values averaged over one grid period (a moving window
+of 2π / (w · Ts) samples, at most 256, where w is the averaged frequency estimate,
+resized once per period; w_ref until the first window is full), positive d
+voltage within 10% of the configured grid peak, frequency within 5% of the frequency
+reference, and `abs(Vq)` below 1% of the configured peak (about 3.3 V at 230 V, a
+phase error of about 0.6°), for 1000 consecutive control calls (100 ms at 10 kHz).
+A real grid's harmonics and any offset on the voltage measurement ripple Vd, Vq and
+the frequency estimate at multiples of the grid frequency; the ripple averages out
+over a period, while a phase jump moves the averages at once. `getVdqAverage()` and
+`getwAverage()` return the averages. The window restarts on `init()` and
+`setWRef()`, so qualification needs one period more after either. A failed sample resets the
 counter. `getSync()` reports true once this dwell completes, even while
 `requestSync()` holds VOLTAGE_SYNC with PWM and relay requests off. A failed
 sample or bad external verdict clears qualification; a full dwell is required again.

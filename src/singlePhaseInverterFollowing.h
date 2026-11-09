@@ -68,9 +68,10 @@ public:
      * @brief Advance phase estimation and control by one sampling period.
      *
      * Updates SOGI signals, dq measurements, current control, and power.
-     * FOLLOWING qualifies positive d voltage within 10% of the nominal peak,
-     * frequency within 5% of its reference, and |Vq| < 0.1 V for 1000 consecutive
-     * calls before allowing a requested connection. requestSync() holds this
+     * FOLLOWING qualifies, on values averaged over one nominal grid period, positive
+     * d voltage within 10% of the nominal peak, frequency within 5% of its reference,
+     * and |Vq| below 1% of the nominal peak, for 1000 consecutive calls before
+     * allowing a requested connection. requestSync() holds this
      * stage without requesting PWM or relay closure. A connection request first enables
      * PWM at 50 percent duty. After PWM enable acknowledgement, it holds neutral
      * until the computed grid-matching duty is near 50 percent, then links that
@@ -301,6 +302,14 @@ public:
 
 private:
     bool synchronizationAligned() const;
+public:
+    /** @brief Vdq averaged over one nominal grid period (V); zero until the window is full. */
+    dqo_t getVdqAverage() const;
+    /** @brief PLL frequency averaged over one nominal grid period (rad/s); zero until the window is full. */
+    float32_t getwAverage() const;
+    /** @brief True once the averaging window holds one full period. */
+    bool isSyncWindowFull() const;
+private:
 
     // Internal state variables
 
@@ -356,7 +365,35 @@ private:
     bool _resync_requested = false;
     float32_t _state_elapsed = 0.0F;
     const float32_t _connection_timeout = 1.0F; ///< Connection/disconnection timeout (s).
-    const float32_t _sync_voltage_tolerance = 0.1F; ///< q-axis voltage tolerance (V).
+    float32_t _sync_voltage_tolerance = 0.0F; ///< Tolerance on the period-averaged |Vq| (V): 1 % of the nominal peak, set by init().
+
+    /* Synchronization is judged on Vd, Vq and w averaged over one grid period: a real
+     * grid's harmonics and the VAC offset ripple these quantities at multiples of the grid
+     * frequency, and the ripple averages out over a whole period (luizvilla/Core#7). The
+     * window spans one period of the averaged frequency (one period of w_ref until the
+     * first window is full), resized once per period, so it stays a whole period off-nominal. */
+    static constexpr uint16_t SYNC_WINDOW_MAX = 256; ///< Ring buffer size: most samples in a window.
+    float32_t _sync_win_vd[SYNC_WINDOW_MAX] = {};
+    float32_t _sync_win_vq[SYNC_WINDOW_MAX] = {};
+    float32_t _sync_win_w[SYNC_WINDOW_MAX] = {};
+    uint16_t _sync_win_len = 1;   ///< Window length in samples (capped at SYNC_WINDOW_MAX).
+    uint16_t _sync_win_pos = 0;   ///< Next ring slot to write.
+    uint16_t _sync_win_count = 0; ///< Samples stored (up to SYNC_WINDOW_MAX).
+    uint16_t _sync_win_age = 0;   ///< Samples since the window length was last set.
+    bool _sync_win_full = false;  ///< The window has held one full period at least once.
+    /** @brief Window length for a frequency: one period, within [1, SYNC_WINDOW_MAX]. */
+    uint16_t syncWindowLength(float32_t w) const;
+    /** @brief Recompute the sums exactly over the last _sync_win_len samples. */
+    void resumSyncWindow();
+    float32_t _sync_sum_vd = 0.0F;
+    float32_t _sync_sum_vq = 0.0F;
+    float32_t _sync_sum_w = 0.0F;
+    dqo_t _Vdq_avg = {};          ///< Period-averaged Vdq (V).
+    float32_t _w_avg = 0.0F;      ///< Period-averaged PLL frequency (rad/s).
+    /** @brief Empty the averaging window and size it to one period of w_ref. */
+    void resetSyncWindow();
+    /** @brief Add this step's Vdq and w to the averaging window. */
+    void updateSyncWindow();
     const float32_t _disconnect_current_tolerance = 0.1F; ///< Both dq axes (A).
     uint16_t _sync_delay_counter = 0;
     const uint16_t _sync_min_delay = 1000;
