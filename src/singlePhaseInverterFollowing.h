@@ -244,6 +244,61 @@ public:
     uint16_t getPwmSettleCycles() const;
 
     /**
+     * @brief Set the gains of the d and q current PIs.
+     * @param kp Proportional gain in volts per ampere; finite and positive. Default 0.001.
+     * @param ti Integral time in seconds; finite and positive. Default 0.0003.
+     * @return False for invalid values (configuration unchanged), true otherwise.
+     * @note Applied at once, also while the current loop runs (the integral state is kept).
+     * Preserved across init(). Call from the control task.
+     */
+    bool setCurrentPiGains(float32_t kp, float32_t ti);
+
+    /** @brief Read the current-PI proportional gain (V/A). */
+    float32_t getCurrentPiKp() const;
+
+    /** @brief Read the current-PI integral time (s). */
+    float32_t getCurrentPiTi() const;
+
+    /**
+     * @brief Set the symmetric output limit of each current PI.
+     * @param limit Largest correction added to the voltage feedforward, in volts; finite
+     * and positive. Default 30.
+     * @return False for invalid values or while the current loop runs (GRID_CONNECTED, RUN,
+     * STOPPING); configuration unchanged. True otherwise.
+     * @note Reinitializes both current PIs. Preserved across init(). Call from the control task.
+     */
+    bool setCurrentPiLimit(float32_t limit);
+
+    /** @brief Read the current-PI output limit (V). */
+    float32_t getCurrentPiLimit() const;
+
+    /**
+     * @brief Set the resonance gain of the current SOGI, separately from the voltage SOGI.
+     * @param kr Gain in rad/s; finite and positive, and kr * Ts < 1 once init() has run.
+     * Default 500 (the voltage SOGI's gain). In the dq frame the SOGI acts as a first-order
+     * low-pass at kr / 2 on the measured current, which bounds the current-loop bandwidth.
+     * @return False for invalid values or while the current loop runs (GRID_CONNECTED, RUN,
+     * STOPPING); configuration unchanged. True otherwise.
+     * @note Resets the current SOGI state. Preserved across init(). Call from the control task.
+     */
+    bool setCurrentSogiGain(float32_t kr);
+
+    /** @brief Read the current-SOGI resonance gain (rad/s). */
+    float32_t getCurrentSogiGain() const;
+
+    /**
+     * @brief Advance the output rotation to compensate the actuation delay.
+     * @param periods Advance in control periods, in [0, 2]: the output voltage is rotated by
+     * theta + periods * w * Ts. Default 0.
+     * @return False for invalid values (configuration unchanged), true otherwise.
+     * @note Applied at once. Preserved across init(). Call from the control task.
+     */
+    bool setOutputPhaseAdvance(float32_t periods);
+
+    /** @brief Read the output-rotation advance in control periods. */
+    float32_t getOutputPhaseAdvance() const;
+
+    /**
      * @brief Latch FAULT immediately and drop PWM/relay requests without waiting for zero current.
      * @param reason Fault cause; defaults to EXTERNAL. NONE is treated as EXTERNAL.
      * @note Preserves the first fault cause until cleared. Hardware actions remain
@@ -362,6 +417,15 @@ private:
     float32_t _pwm_start_duty_tolerance = 0.01F;
     float32_t _pwm_settle_cycles = 0.0F; ///< Grid periods elapsed in PWM_SETTLE (single precision: the M4 FPU has no double).
     uint16_t _pwm_settle_min_cycles = 10; ///< Zero holds the relay open indefinitely.
+    float32_t _current_kp = 0.001F;      ///< Current-PI proportional gain (V/A).
+    float32_t _current_ti = 0.0003F;     ///< Current-PI integral time (s).
+    float32_t _current_limit = 30.0F;    ///< Current-PI output limit (V).
+    float32_t _current_sogi_kr = 500.0F; ///< Current-SOGI resonance gain (rad/s).
+    float32_t _output_phase_advance = 0.0F; ///< Output-rotation advance (control periods).
+    /** @brief True while the current PIs drive the output. */
+    bool currentLoopActive() const;
+    /** @brief (Re)initialize both current PIs from the stored gains and limit. */
+    int8_t initCurrentPis();
     bool _resync_requested = false;
     float32_t _state_elapsed = 0.0F;
     const float32_t _connection_timeout = 1.0F; ///< Connection/disconnection timeout (s).

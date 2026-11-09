@@ -56,7 +56,7 @@ int8_t singlePhaseInverterFollowing::init(float32_t V_bus, float32_t grid_Vpk, f
     _V_bus = V_bus;
 
     _sogi_v.init(Kr, _Ts);
-    _sogi_i.init(Kr, _Ts);
+    _sogi_i.init(_current_sogi_kr, _Ts);
 
     _pll_pi_params.Ts = Ts;
     _pll_pi_params.Td = 0.0;
@@ -65,6 +65,11 @@ int8_t singlePhaseInverterFollowing::init(float32_t V_bus, float32_t grid_Vpk, f
     _pll_pi_params.Kp = Kp;
     _pll_pi_params.lower_bound = -10.0F * _w_ref;
     _pll_pi_params.upper_bound = 10.0F * _w_ref;
+
+    if (_current_sogi_kr * _Ts >= 1.0F) {
+        tripFault(VSI_FAULT_INVALID_CONFIGURATION);
+        return -EINVAL;
+    }
 
     if (!inverter_validation::positive(Kp) || !inverter_validation::positive(Ki) ||
         !inverter_validation::positive(_pll_pi_params.Ti) ||
@@ -80,25 +85,11 @@ int8_t singlePhaseInverterFollowing::init(float32_t V_bus, float32_t grid_Vpk, f
     _pll_pi.reset(); // The PLL supplies a correction added to _w_ref.
 
     _Idq_ref = {};
-    _current_pi_params.Ts = _Ts;
-    _current_pi_params.Kp = 0.001;
-    _current_pi_params.Ti = 0.0003;
-    _current_pi_params.Td = 0.0;
-    _current_pi_params.N = 1.0;
-    _current_pi_params.upper_bound = 30;
-    _current_pi_params.lower_bound = -30;
-    const int8_t current_d_result = _current_d_pi.init(_current_pi_params);
-    if (current_d_result != 0) {
+    const int8_t current_result = initCurrentPis();
+    if (current_result != 0) {
         tripFault(VSI_FAULT_INVALID_CONFIGURATION);
-        return current_d_result;
+        return current_result;
     }
-    const int8_t current_q_result = _current_q_pi.init(_current_pi_params);
-    if (current_q_result != 0) {
-        tripFault(VSI_FAULT_INVALID_CONFIGURATION);
-        return current_q_result;
-    }
-    _current_d_pi.reset();
-    _current_q_pi.reset();
 
     _Vdq = {};
     _Idq = {};
@@ -187,7 +178,7 @@ float32_t singlePhaseInverterFollowing::calculateDuty(float32_t vgrid_meas, floa
         _Vdq_output = {};
     }
 
-    _Vab_output = Transform::rotation_to_clarke(_Vdq_output, _theta);
+    _Vab_output = Transform::rotation_to_clarke(_Vdq_output, _theta + _output_phase_advance * _w * _Ts);
 
     _Vond = _Vab_output.alpha;
     _duty_cycle = _Vond / (2.0F * _V_bus) + 0.5F;
@@ -353,6 +344,78 @@ void singlePhaseInverterFollowing::setPwmSettleCycles(uint16_t cycles) {
     }
 }
 
+int8_t singlePhaseInverterFollowing::initCurrentPis() {
+    _current_pi_params.Ts = _Ts;
+    _current_pi_params.Kp = _current_kp;
+    _current_pi_params.Ti = _current_ti;
+    _current_pi_params.Td = 0.0F;
+    _current_pi_params.N = 1.0F;
+    _current_pi_params.upper_bound = _current_limit;
+    _current_pi_params.lower_bound = -_current_limit;
+    const int8_t d_result = _current_d_pi.init(_current_pi_params);
+    if (d_result != 0) return d_result;
+    const int8_t q_result = _current_q_pi.init(_current_pi_params);
+    if (q_result != 0) return q_result;
+    _current_d_pi.reset();
+    _current_q_pi.reset();
+    return 0;
+}
+
+bool singlePhaseInverterFollowing::currentLoopActive() const {
+    return _mode == VSI_RUN || _mode == VSI_GRID_CONNECTED || _mode == VSI_STOPPING;
+}
+
+bool singlePhaseInverterFollowing::setCurrentPiGains(float32_t kp, float32_t ti) {
+    if (!inverter_validation::positive(kp) || !inverter_validation::positive(ti)) return false;
+    _current_kp = kp;
+    _current_ti = ti;
+    _current_pi_params.Kp = kp;
+    _current_pi_params.Ti = ti;
+    if (_initialized) {
+        _current_d_pi.setKp(kp);
+        _current_d_pi.setTi(ti);
+        _current_q_pi.setKp(kp);
+        _current_q_pi.setTi(ti);
+    }
+    return true;
+}
+
+float32_t singlePhaseInverterFollowing::getCurrentPiKp() const { return _current_kp; }
+
+float32_t singlePhaseInverterFollowing::getCurrentPiTi() const { return _current_ti; }
+
+bool singlePhaseInverterFollowing::setCurrentPiLimit(float32_t limit) {
+    if (!inverter_validation::positive(limit) || currentLoopActive()) return false;
+    const float32_t previous = _current_limit;
+    _current_limit = limit;
+    if (_initialized && initCurrentPis() != 0) {
+        _current_limit = previous;
+        initCurrentPis();
+        return false;
+    }
+    return true;
+}
+
+float32_t singlePhaseInverterFollowing::getCurrentPiLimit() const { return _current_limit; }
+
+bool singlePhaseInverterFollowing::setCurrentSogiGain(float32_t kr) {
+    if (!inverter_validation::positive(kr) || currentLoopActive()) return false;
+    if (_initialized && kr * _Ts >= 1.0F) return false;
+    _current_sogi_kr = kr;
+    if (_initialized) _sogi_i.init(kr, _Ts);
+    return true;
+}
+
+float32_t singlePhaseInverterFollowing::getCurrentSogiGain() const { return _current_sogi_kr; }
+
+bool singlePhaseInverterFollowing::setOutputPhaseAdvance(float32_t periods) {
+    if (!isfinite(periods) || periods < 0.0F || periods > 2.0F) return false;
+    _output_phase_advance = periods;
+    return true;
+}
+
+float32_t singlePhaseInverterFollowing::getOutputPhaseAdvance() const { return _output_phase_advance; }
+
 uint16_t singlePhaseInverterFollowing::getPwmSettleCycles() const {
     return _pwm_settle_min_cycles;
 }
@@ -394,7 +457,7 @@ void singlePhaseInverterFollowing::tripFault(vsi_fault_reason_t reason) {
         if (reason == VSI_FAULT_INVALID_CONTROL_STATE) {
             // Discard poisoned filter/PLL history so recovery can observe a healthy grid.
             _sogi_v.init(500.0F, _Ts);
-            _sogi_i.init(500.0F, _Ts);
+            _sogi_i.init(_current_sogi_kr, _Ts);
             _theta = 0.0F;
             _Vdq = {};
             _pll_pi.reset();
