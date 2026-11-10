@@ -313,6 +313,71 @@ public:
     float32_t getFeedforwardGain() const;
 
     /**
+     * @brief Run the current PI (zero reference) from GRID_CONNECT, i.e. from the relay request, instead of
+     * from GRID_CONNECTED. Default false. With the relay open the measured current is about zero, so the PI
+     * stays at zero until the contact, then holds the current from the first sample.
+     */
+    void setCurrentLoopFromConnect(bool enabled);
+
+    /** @brief Read whether the current PI runs from GRID_CONNECT. */
+    bool getCurrentLoopFromConnect() const;
+
+    /**
+     * @brief Freeze the PLL for a connection: the frequency is latched at its period average (or the current
+     * estimate before the window is full), the PLL integrator is held and the angle free-runs.
+     * @param duration Seconds, in [0, 1]; 0 releases at once. @return False for invalid values.
+     * @note Counts down every calculateDuty() call, in every mode.
+     */
+    bool freezePll(float32_t duration);
+
+    /** @brief True while the PLL is frozen. */
+    bool isPllFrozen() const;
+
+    /**
+     * @brief Hold the feedforward for a connection: the period-averaged Vd at the call (Vq 0), rotated by the
+     * PLL angle, replaces the measured Vdq (synthesized feedforward); it also overrides an external feedforward.
+     * @param duration Seconds, in [0, 1]; 0 releases at once. @return False for invalid values.
+     * @note Counts down every calculateDuty() call. The feedforward gain applies.
+     */
+    bool holdFeedforward(float32_t duration);
+
+    /** @brief True while the feedforward is held. */
+    bool isFeedforwardHeld() const;
+
+    /**
+     * @brief Supply an instantaneous feedforward voltage (stationary frame, V) that replaces the measured
+     * feedforward in PWM_WAIT, PWM_SETTLE, GRID_CONNECT and with the current loop, while enabled.
+     * @param v_alpha Voltage, e.g. a copy of VAC compensated for the actuation delay; non-finite disables.
+     * @param enabled Use it (true) or the measured feedforward (false).
+     * @note Call every control period before calculateDuty() while enabled. The current PI output is
+     * rotated by the PLL angle and added; the feedforward gain applies; a feedforward hold overrides it.
+     */
+    void setExternalFeedforward(float32_t v_alpha, bool enabled);
+
+    /**
+     * @brief Blanking after the predicted relay contact: the PLL stays frozen and the feedforward held this long
+     * after it (see notifyRelayCommand()). 0 (default) disables the blanking.
+     * @param after_contact Seconds, in [0, 0.5]. @return False for invalid values. Kept across init().
+     */
+    bool setConnectionBlanking(float32_t after_contact);
+
+    /** @brief Read the blanking after the predicted contact (s). */
+    float32_t getConnectionBlanking() const;
+
+    /**
+     * @brief The application has just commanded the relay closed; the contact is expected close_delay later.
+     * With a blanking set: the PLL is frozen from now until close_delay + blanking; at the predicted contact the
+     * feedforward is held (synthesized) for the blanking. Whatever the blanking, an external feedforward stops
+     * at the predicted contact (after it, VAC is the inverter's own voltage through a series impedance).
+     * @param close_delay Relay closing time (s), in [0, 0.5]. @return False for invalid values.
+     * @note The schedule is cleared in OFF, VOLTAGE_SYNC, PWM_WAIT and FAULT.
+     */
+    bool notifyRelayCommand(float32_t close_delay);
+
+    /** @brief True once the predicted contact has passed (until the connection ends). */
+    bool isContactPredicted() const;
+
+    /**
      * @brief Latch FAULT immediately and drop PWM/relay requests without waiting for zero current.
      * @param reason Fault cause; defaults to EXTERNAL. NONE is treated as EXTERNAL.
      * @note Preserves the first fault cause until cleared. Hardware actions remain
@@ -437,6 +502,17 @@ private:
     float32_t _current_sogi_kr = 500.0F; ///< Current-SOGI resonance gain (rad/s).
     float32_t _output_phase_advance = 0.0F; ///< Output-rotation advance (control periods).
     float32_t _feedforward_gain = 1.0F; ///< Scale of the grid-voltage feedforward.
+    bool _current_loop_from_connect = false; ///< Current PI from GRID_CONNECT.
+    float32_t _pll_freeze_remaining = 0.0F;  ///< PLL freeze left (s).
+    float32_t _pll_freeze_w = 0.0F;          ///< Latched frequency during the freeze (rad/s).
+    float32_t _ff_hold_remaining = 0.0F;     ///< Feedforward hold left (s).
+    float32_t _ff_hold_vd = 0.0F;            ///< Held Vd (V).
+    float32_t _external_ff_v = 0.0F;         ///< External feedforward voltage (V).
+    bool _external_ff_enabled = false;       ///< External feedforward in use.
+    float32_t _connection_blanking = 0.0F;   ///< Blanking after the predicted contact (s).
+    float32_t _contact_countdown = 0.0F;     ///< Time to the predicted contact (s).
+    bool _contact_pending = false;           ///< A relay command was notified, contact not reached yet.
+    bool _contact_passed = false;            ///< The predicted contact has passed.
     /** @brief True while the current PIs drive the output. */
     bool currentLoopActive() const;
     /** @brief (Re)initialize both current PIs from the stored gains and limit. */

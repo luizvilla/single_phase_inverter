@@ -85,6 +85,11 @@ int8_t singlePhaseInverterFollowing::init(float32_t V_bus, float32_t grid_Vpk, f
     _pll_pi.reset(); // The PLL supplies a correction added to _w_ref.
 
     _Idq_ref = {};
+    _pll_freeze_remaining = 0.0F;  // connection holds are transient: cleared by init()
+    _ff_hold_remaining = 0.0F;
+    _external_ff_enabled = false;
+    _contact_pending = false;
+    _contact_passed = false;
     const int8_t current_result = initCurrentPis();
     if (current_result != 0) {
         tripFault(VSI_FAULT_INVALID_CONFIGURATION);
@@ -130,7 +135,13 @@ float32_t singlePhaseInverterFollowing::calculateDuty(float32_t vgrid_meas, floa
         return _duty_cycle;
     }
 
-    _w = _w_ref + _pll_pi.calculateWithReturn(0, -1.0F * _Vdq.q);
+    if (_pll_freeze_remaining > 0.0F) {
+        // Connection hold: the PLL integrator is held and the frequency latched; the angle free-runs.
+        _w = _pll_freeze_w;
+        _pll_freeze_remaining -= _Ts;
+    } else {
+        _w = _w_ref + _pll_pi.calculateWithReturn(0, -1.0F * _Vdq.q);
+    }
 
     const float32_t next_theta = _theta + _w * _Ts;
     if (!isfinite(_w) || !isfinite(next_theta)) {
@@ -159,31 +170,55 @@ float32_t singlePhaseInverterFollowing::calculateDuty(float32_t vgrid_meas, floa
     updateSyncWindow();
 
     updateMode();
-    if (_mode == VSI_RUN || _mode == VSI_GRID_CONNECTED ||
-        _mode == VSI_STOPPING) {
+    // Anticipated contact (notifyRelayCommand): at the predicted instant, the feedforward hold starts and an
+    // external feedforward stops. Outside a connection the schedule is cleared.
+    if (_mode == VSI_OFF || _mode == VSI_VOLTAGE_SYNC || _mode == VSI_PWM_WAIT || _mode == VSI_FAULT) {
+        _contact_pending = false;
+        _contact_passed = false;
+    }
+    if (_contact_pending) {
+        _contact_countdown -= _Ts;
+        if (_contact_countdown <= 0.0F) {
+            _contact_pending = false;
+            _contact_passed = true;
+            if (_connection_blanking > 0.0F) holdFeedforward(_connection_blanking);
+        }
+    }
+    // Feedforward: the measured grid voltage, or the held (synthesized) one during a connection hold.
+    const bool ff_hold = _ff_hold_remaining > 0.0F;
+    if (ff_hold) _ff_hold_remaining -= _Ts;
+    const dqo_t ff = {_feedforward_gain * (ff_hold ? _ff_hold_vd : _Vdq.d),
+                      _feedforward_gain * (ff_hold ? 0.0F : _Vdq.q), 0.0F};
+    const bool current_loop = _mode == VSI_RUN || _mode == VSI_GRID_CONNECTED || _mode == VSI_STOPPING ||
+                              (_current_loop_from_connect && _mode == VSI_GRID_CONNECT);
+    const bool ff_modes = _mode == VSI_PWM_WAIT || _mode == VSI_PWM_SETTLE || _mode == VSI_GRID_CONNECT;
+    dqo_t pi_out = {};
+    if (current_loop) {
         const float32_t id_ref = _mode == VSI_RUN ? _Idq_ref.d : 0.0F;
         const float32_t iq_ref = _mode == VSI_RUN ? _Idq_ref.q : 0.0F;
-        _Vdq_output.d = _feedforward_gain * _Vdq.d + _current_d_pi.calculateWithReturn(id_ref, _Idq.d);
-        _Vdq_output.q = _feedforward_gain * _Vdq.q + _current_q_pi.calculateWithReturn(iq_ref, _Idq.q);
-        _Vdq_output.o = 0.0F;
+        pi_out.d = _current_d_pi.calculateWithReturn(id_ref, _Idq.d);
+        pi_out.q = _current_q_pi.calculateWithReturn(iq_ref, _Idq.q);
+        _Vdq_output = {ff.d + pi_out.d, ff.q + pi_out.q, 0.0F};
     } else {
         _current_d_pi.reset();
         _current_q_pi.reset();
         // Compute grid-matching duty while waiting for a near-neutral PWM start.
-        if (_mode == VSI_PWM_WAIT || _mode == VSI_PWM_SETTLE || _mode == VSI_GRID_CONNECT) {
-            _Vdq_output.d = _feedforward_gain * _Vdq.d;
-            _Vdq_output.q = _feedforward_gain * _Vdq.q;
-            _Vdq_output.o = 0.0F;
-        } else {
-            _Vdq_output = dqo_t{};
-        }
+        _Vdq_output = ff_modes ? ff : dqo_t{};
     }
 
     if (_mode == VSI_FAULT) {
         _Vdq_output = {};
+        pi_out = {};
     }
 
-    _Vab_output = Transform::rotation_to_clarke(_Vdq_output, _theta + _output_phase_advance * _w * _Ts);
+    const float32_t out_angle = _theta + _output_phase_advance * _w * _Ts;
+    _Vab_output = Transform::rotation_to_clarke(_Vdq_output, out_angle);
+    // External feedforward (application-supplied instantaneous voltage, e.g. a copy of VAC) replaces the
+    // measured feedforward before the relay contact; a feedforward hold takes precedence over it.
+    if (_external_ff_enabled && !ff_hold && !_contact_passed && (ff_modes || current_loop) && _mode != VSI_FAULT) {
+        _Vab_output = Transform::rotation_to_clarke(pi_out, out_angle);
+        _Vab_output.alpha += _feedforward_gain * _external_ff_v;
+    }
 
     _Vond = _Vab_output.alpha;
     _duty_cycle = _Vond / (2.0F * _V_bus) + 0.5F;
@@ -428,6 +463,52 @@ bool singlePhaseInverterFollowing::setFeedforwardGain(float32_t gain) {
 }
 
 float32_t singlePhaseInverterFollowing::getFeedforwardGain() const { return _feedforward_gain; }
+
+void singlePhaseInverterFollowing::setCurrentLoopFromConnect(bool enabled) { _current_loop_from_connect = enabled; }
+
+bool singlePhaseInverterFollowing::getCurrentLoopFromConnect() const { return _current_loop_from_connect; }
+
+bool singlePhaseInverterFollowing::freezePll(float32_t duration) {
+    if (!isfinite(duration) || duration < 0.0F || duration > 1.0F) return false;
+    _pll_freeze_w = isSyncWindowFull() ? _w_avg : _w;
+    _pll_freeze_remaining = duration;
+    return true;
+}
+
+bool singlePhaseInverterFollowing::isPllFrozen() const { return _pll_freeze_remaining > 0.0F; }
+
+bool singlePhaseInverterFollowing::holdFeedforward(float32_t duration) {
+    if (!isfinite(duration) || duration < 0.0F || duration > 1.0F) return false;
+    _ff_hold_vd = isSyncWindowFull() ? _Vdq_avg.d : _Vdq.d;
+    _ff_hold_remaining = duration;
+    return true;
+}
+
+bool singlePhaseInverterFollowing::isFeedforwardHeld() const { return _ff_hold_remaining > 0.0F; }
+
+bool singlePhaseInverterFollowing::setConnectionBlanking(float32_t after_contact) {
+    if (!isfinite(after_contact) || after_contact < 0.0F || after_contact > 0.5F) return false;
+    _connection_blanking = after_contact;
+    return true;
+}
+
+float32_t singlePhaseInverterFollowing::getConnectionBlanking() const { return _connection_blanking; }
+
+bool singlePhaseInverterFollowing::notifyRelayCommand(float32_t close_delay) {
+    if (!isfinite(close_delay) || close_delay < 0.0F || close_delay > 0.5F) return false;
+    _contact_countdown = close_delay;
+    _contact_pending = true;
+    _contact_passed = false;
+    if (_connection_blanking > 0.0F) freezePll(close_delay + _connection_blanking);
+    return true;
+}
+
+bool singlePhaseInverterFollowing::isContactPredicted() const { return _contact_passed; }
+
+void singlePhaseInverterFollowing::setExternalFeedforward(float32_t v_alpha, bool enabled) {
+    _external_ff_v = isfinite(v_alpha) ? v_alpha : 0.0F;
+    _external_ff_enabled = enabled && isfinite(v_alpha);
+}
 
 uint16_t singlePhaseInverterFollowing::getPwmSettleCycles() const {
     return _pwm_settle_min_cycles;
