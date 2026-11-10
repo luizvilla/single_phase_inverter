@@ -163,15 +163,20 @@ float32_t singlePhaseInverterFollowing::calculateDuty(float32_t vgrid_meas, floa
         _mode == VSI_STOPPING) {
         const float32_t id_ref = _mode == VSI_RUN ? _Idq_ref.d : 0.0F;
         const float32_t iq_ref = _mode == VSI_RUN ? _Idq_ref.q : 0.0F;
-        _Vdq_output.d = _Vdq.d + _current_d_pi.calculateWithReturn(id_ref, _Idq.d);
-        _Vdq_output.q = _Vdq.q + _current_q_pi.calculateWithReturn(iq_ref, _Idq.q);
+        _Vdq_output.d = _feedforward_gain * _Vdq.d + _current_d_pi.calculateWithReturn(id_ref, _Idq.d);
+        _Vdq_output.q = _feedforward_gain * _Vdq.q + _current_q_pi.calculateWithReturn(iq_ref, _Idq.q);
         _Vdq_output.o = 0.0F;
     } else {
         _current_d_pi.reset();
         _current_q_pi.reset();
         // Compute grid-matching duty while waiting for a near-neutral PWM start.
-        _Vdq_output = (_mode == VSI_PWM_WAIT || _mode == VSI_PWM_SETTLE ||
-                       _mode == VSI_GRID_CONNECT) ? _Vdq : dqo_t{};
+        if (_mode == VSI_PWM_WAIT || _mode == VSI_PWM_SETTLE || _mode == VSI_GRID_CONNECT) {
+            _Vdq_output.d = _feedforward_gain * _Vdq.d;
+            _Vdq_output.q = _feedforward_gain * _Vdq.q;
+            _Vdq_output.o = 0.0F;
+        } else {
+            _Vdq_output = dqo_t{};
+        }
     }
 
     if (_mode == VSI_FAULT) {
@@ -415,6 +420,14 @@ bool singlePhaseInverterFollowing::setOutputPhaseAdvance(float32_t periods) {
 }
 
 float32_t singlePhaseInverterFollowing::getOutputPhaseAdvance() const { return _output_phase_advance; }
+
+bool singlePhaseInverterFollowing::setFeedforwardGain(float32_t gain) {
+    if (!isfinite(gain) || gain < 0.5F || gain > 1.5F) return false;
+    _feedforward_gain = gain;
+    return true;
+}
+
+float32_t singlePhaseInverterFollowing::getFeedforwardGain() const { return _feedforward_gain; }
 
 uint16_t singlePhaseInverterFollowing::getPwmSettleCycles() const {
     return _pwm_settle_min_cycles;

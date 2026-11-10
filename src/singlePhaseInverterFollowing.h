@@ -299,6 +299,20 @@ public:
     float32_t getOutputPhaseAdvance() const;
 
     /**
+     * @brief Scale the grid-voltage feedforward (the measured Vdq added to the current PI output).
+     * @param gain Factor in [0.5, 1.5]; default 1. Above 1 the inverter-side voltage leads the grid in
+     * amplitude, so current flows out of the inverter when the relay closes (bench step 1c/2).
+     * @return False for invalid values (configuration unchanged), true otherwise.
+     * @note Applied at once, in PWM_WAIT/PWM_SETTLE/GRID_CONNECT and with the current loop. In the
+     * connected states the current PI integrates the resulting steady error away. Preserved across
+     * init(). Call from the control task.
+     */
+    bool setFeedforwardGain(float32_t gain);
+
+    /** @brief Read the feedforward gain. */
+    float32_t getFeedforwardGain() const;
+
+    /**
      * @brief Latch FAULT immediately and drop PWM/relay requests without waiting for zero current.
      * @param reason Fault cause; defaults to EXTERNAL. NONE is treated as EXTERNAL.
      * @note Preserves the first fault cause until cleared. Hardware actions remain
@@ -422,6 +436,7 @@ private:
     float32_t _current_limit = 30.0F;    ///< Current-PI output limit (V).
     float32_t _current_sogi_kr = 500.0F; ///< Current-SOGI resonance gain (rad/s).
     float32_t _output_phase_advance = 0.0F; ///< Output-rotation advance (control periods).
+    float32_t _feedforward_gain = 1.0F; ///< Scale of the grid-voltage feedforward.
     /** @brief True while the current PIs drive the output. */
     bool currentLoopActive() const;
     /** @brief (Re)initialize both current PIs from the stored gains and limit. */
