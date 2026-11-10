@@ -88,7 +88,7 @@ int8_t singlePhaseInverterFollowing::init(float32_t V_bus, float32_t grid_Vpk, f
     _pll_freeze_remaining = 0.0F;  // connection holds are transient: cleared by init()
     _ff_hold_remaining = 0.0F;
     _external_ff_enabled = false;
-    _contact_pending = false;
+    _notified = false;
     _contact_passed = false;
     const int8_t current_result = initCurrentPis();
     if (current_result != 0) {
@@ -170,18 +170,17 @@ float32_t singlePhaseInverterFollowing::calculateDuty(float32_t vgrid_meas, floa
     updateSyncWindow();
 
     updateMode();
-    // Anticipated contact (notifyRelayCommand): at the predicted instant, the feedforward hold starts and an
-    // external feedforward stops. Outside a connection the schedule is cleared.
+    // Connection sequence (notifyRelayCommand): time since the relay command; at the predicted contact an external
+    // feedforward stops and, within the blanking, the feedforward is held until the blanking ends.
     if (_mode == VSI_OFF || _mode == VSI_VOLTAGE_SYNC || _mode == VSI_PWM_WAIT || _mode == VSI_FAULT) {
-        _contact_pending = false;
+        _notified = false;
         _contact_passed = false;
     }
-    if (_contact_pending) {
-        _contact_countdown -= _Ts;
-        if (_contact_countdown <= 0.0F) {
-            _contact_pending = false;
+    if (_notified) {
+        _since_notify += _Ts;
+        if (!_contact_passed && _since_notify >= _close_delay) {
             _contact_passed = true;
-            if (_connection_blanking > 0.0F) holdFeedforward(_connection_blanking);
+            if (_connection_blanking > _since_notify) holdFeedforward(_connection_blanking - _since_notify);
         }
     }
     // Feedforward: the measured grid voltage, or the held (synthesized) one during a connection hold.
@@ -486,20 +485,29 @@ bool singlePhaseInverterFollowing::holdFeedforward(float32_t duration) {
 
 bool singlePhaseInverterFollowing::isFeedforwardHeld() const { return _ff_hold_remaining > 0.0F; }
 
-bool singlePhaseInverterFollowing::setConnectionBlanking(float32_t after_contact) {
-    if (!isfinite(after_contact) || after_contact < 0.0F || after_contact > 0.5F) return false;
-    _connection_blanking = after_contact;
+bool singlePhaseInverterFollowing::setConnectionBlanking(float32_t from_command) {
+    if (!isfinite(from_command) || from_command < 0.0F || from_command > 0.5F) return false;
+    _connection_blanking = from_command;
     return true;
 }
+
+bool singlePhaseInverterFollowing::setConnectWindow(float32_t from_command) {
+    if (!isfinite(from_command) || from_command < 0.0F || from_command > 0.9F) return false;
+    _connect_window = from_command;
+    return true;
+}
+
+float32_t singlePhaseInverterFollowing::getConnectWindow() const { return _connect_window; }
 
 float32_t singlePhaseInverterFollowing::getConnectionBlanking() const { return _connection_blanking; }
 
 bool singlePhaseInverterFollowing::notifyRelayCommand(float32_t close_delay) {
     if (!isfinite(close_delay) || close_delay < 0.0F || close_delay > 0.5F) return false;
-    _contact_countdown = close_delay;
-    _contact_pending = true;
+    _close_delay = close_delay;
+    _since_notify = 0.0F;
+    _notified = true;
     _contact_passed = false;
-    if (_connection_blanking > 0.0F) freezePll(close_delay + _connection_blanking);
+    if (_connection_blanking > 0.0F) freezePll(_connection_blanking);
     return true;
 }
 
@@ -637,12 +645,15 @@ void singlePhaseInverterFollowing::updateMode() {
         }
         break;
     case VSI_GRID_CONNECT:
-        // Revalidate before accepting contact feedback, even if it arrives this tick.
-        if (!synchronizationAligned()) {
+        // Revalidate before accepting contact feedback, even if it arrives this tick. While the PLL is frozen on
+        // purpose (connection blanking) the alignment is not judged.
+        if (_pll_freeze_remaining <= 0.0F && !synchronizationAligned()) {
             tripFault(VSI_FAULT_SYNC_LOST);
         } else if (!_pwm_enabled) {
             tripFault(VSI_FAULT_PWM_UPDATE_FAILED);
-        } else if (_grid_connected) {
+        } else if (_grid_connected && (_connect_window <= 0.0F || (_notified && _since_notify >= _connect_window))) {
+            // With a connect window, CONNECTED comes that long after the relay command (counted here), once the
+            // relay feedback also says closed; without one, on the feedback alone.
             enterMode(VSI_GRID_CONNECTED);
         } else if ((_state_elapsed += _Ts) >= _connection_timeout) {
             tripFault(VSI_FAULT_CONNECTION_TIMEOUT);

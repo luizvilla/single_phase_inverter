@@ -355,22 +355,33 @@ public:
     void setExternalFeedforward(float32_t v_alpha, bool enabled);
 
     /**
-     * @brief Blanking after the predicted relay contact: the PLL stays frozen and the feedforward held this long
-     * after it (see notifyRelayCommand()). 0 (default) disables the blanking.
-     * @param after_contact Seconds, in [0, 0.5]. @return False for invalid values. Kept across init().
+     * @brief Connection blanking, counted from the relay command (notifyRelayCommand()): the PLL is frozen for
+     * this long, and from the predicted contact to its end the feedforward is held (synthesized). While the PLL
+     * is frozen the synchronization alignment is not judged. 0 (default) disables it.
+     * @param from_command Seconds, in [0, 0.5]. @return False for invalid values. Kept across init().
      */
-    bool setConnectionBlanking(float32_t after_contact);
+    bool setConnectionBlanking(float32_t from_command);
 
-    /** @brief Read the blanking after the predicted contact (s). */
+    /** @brief Read the connection blanking (s from the relay command). */
     float32_t getConnectionBlanking() const;
 
     /**
+     * @brief Connect window: GRID_CONNECT moves to GRID_CONNECTED this long after the relay command (counted by
+     * the inverter), once the relay feedback is also closed; the 1 s connection timeout still applies.
+     * 0 (default): on the feedback alone, as before.
+     * @param from_command Seconds, in [0, 0.9]. @return False for invalid values. Kept across init().
+     */
+    bool setConnectWindow(float32_t from_command);
+
+    /** @brief Read the connect window (s from the relay command). */
+    float32_t getConnectWindow() const;
+
+    /**
      * @brief The application has just commanded the relay closed; the contact is expected close_delay later.
-     * With a blanking set: the PLL is frozen from now until close_delay + blanking; at the predicted contact the
-     * feedforward is held (synthesized) for the blanking. Whatever the blanking, an external feedforward stops
-     * at the predicted contact (after it, VAC is the inverter's own voltage through a series impedance).
+     * Starts the connection blanking and the connect window; an external feedforward stops at the predicted
+     * contact (after it, VAC is the inverter's own voltage through a series impedance).
      * @param close_delay Relay closing time (s), in [0, 0.5]. @return False for invalid values.
-     * @note The schedule is cleared in OFF, VOLTAGE_SYNC, PWM_WAIT and FAULT.
+     * @note The sequence is cleared in OFF, VOLTAGE_SYNC, PWM_WAIT and FAULT.
      */
     bool notifyRelayCommand(float32_t close_delay);
 
@@ -509,9 +520,11 @@ private:
     float32_t _ff_hold_vd = 0.0F;            ///< Held Vd (V).
     float32_t _external_ff_v = 0.0F;         ///< External feedforward voltage (V).
     bool _external_ff_enabled = false;       ///< External feedforward in use.
-    float32_t _connection_blanking = 0.0F;   ///< Blanking after the predicted contact (s).
-    float32_t _contact_countdown = 0.0F;     ///< Time to the predicted contact (s).
-    bool _contact_pending = false;           ///< A relay command was notified, contact not reached yet.
+    float32_t _connection_blanking = 0.0F;   ///< Blanking from the relay command (s).
+    float32_t _connect_window = 0.0F;        ///< GRID_CONNECT → GRID_CONNECTED this long after the command (s); 0: feedback.
+    float32_t _close_delay = 0.0F;           ///< Notified relay closing time (s).
+    float32_t _since_notify = 0.0F;          ///< Time since the relay command (s).
+    bool _notified = false;                  ///< A relay command was notified in this connection.
     bool _contact_passed = false;            ///< The predicted contact has passed.
     /** @brief True while the current PIs drive the output. */
     bool currentLoopActive() const;
