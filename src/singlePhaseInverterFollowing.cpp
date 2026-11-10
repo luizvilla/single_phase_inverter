@@ -172,7 +172,7 @@ float32_t singlePhaseInverterFollowing::calculateDuty(float32_t vgrid_meas, floa
     updateMode();
     // Connection sequence (notifyRelayCommand): time since the relay command; at the predicted contact an external
     // feedforward stops and, within the blanking, the feedforward is held until the blanking ends.
-    if (_mode == VSI_OFF || _mode == VSI_VOLTAGE_SYNC || _mode == VSI_PWM_WAIT || _mode == VSI_FAULT) {
+    if (_notified && (_mode == VSI_OFF || _mode == VSI_VOLTAGE_SYNC || _mode == VSI_PWM_WAIT || _mode == VSI_FAULT)) {
         _notified = false;
         _contact_passed = false;
     }
