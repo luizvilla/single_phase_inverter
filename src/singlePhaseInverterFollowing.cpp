@@ -23,6 +23,7 @@
 #include <errno.h>
 #include "inverterValidation.h"
 #include "inverterTiming.h"
+#include "inverterFastCode.h"
 
 // Constructor for singlePhaseInverterFollowing
 singlePhaseInverterFollowing::singlePhaseInverterFollowing() : _w(0.0F) {}
@@ -126,7 +127,7 @@ volatile uint32_t inv_timing_cycles[INV_TIMING_PROBE_COUNT];
 volatile uint32_t inv_timing_seq;
 #endif
 
-float32_t singlePhaseInverterFollowing::calculateDuty(float32_t vgrid_meas, float32_t igrid_meas) {
+INV_FAST_CODE float32_t singlePhaseInverterFollowing::calculateDuty(float32_t vgrid_meas, float32_t igrid_meas) {
     if (!_initialized) {
         tripFault(VSI_FAULT_INVALID_CONFIGURATION);
         return _duty_cycle;
@@ -269,7 +270,7 @@ float32_t singlePhaseInverterFollowing::calculateDuty(float32_t vgrid_meas, floa
 
 }
 
-dqo_t singlePhaseInverterFollowing::getVdq() {
+INV_FAST_CODE dqo_t singlePhaseInverterFollowing::getVdq() {
     return _Vdq;
 }
 
@@ -289,7 +290,7 @@ clarke_t singlePhaseInverterFollowing::getIab() {
     return _Iab;
 }
 
-clarke_t singlePhaseInverterFollowing::getVab() {
+INV_FAST_CODE clarke_t singlePhaseInverterFollowing::getVab() {
     return _Vab;
 }
 
@@ -297,26 +298,26 @@ clarke_t singlePhaseInverterFollowing::getVabOutput() {
     return _Vab_output;
 }
 
-float32_t singlePhaseInverterFollowing::getTheta() {
+INV_FAST_CODE float32_t singlePhaseInverterFollowing::getTheta() {
     return _theta;
 }
 
-float32_t singlePhaseInverterFollowing::getw() {
+INV_FAST_CODE float32_t singlePhaseInverterFollowing::getw() {
     return _w;
 }
 
-bool singlePhaseInverterFollowing::getSync() {
+INV_FAST_CODE bool singlePhaseInverterFollowing::getSync() {
     return synchronizationAligned() &&
            ((_mode == VSI_VOLTAGE_SYNC && _sync_delay_counter >= _sync_min_delay) ||
             _mode == VSI_PWM_WAIT || _mode == VSI_PWM_SETTLE || _mode == VSI_GRID_CONNECT ||
             _mode == VSI_GRID_CONNECTED || _mode == VSI_RUN);
 }
 
-void singlePhaseInverterFollowing::setVBus(float32_t V_bus) {
+INV_FAST_CODE void singlePhaseInverterFollowing::setVBus(float32_t V_bus) {
     _V_bus = V_bus;
 }
 
-void singlePhaseInverterFollowing::setIdqRef(dqo_t Idq_ref) {
+INV_FAST_CODE void singlePhaseInverterFollowing::setIdqRef(dqo_t Idq_ref) {
     if (!isfinite(Idq_ref.d) || !isfinite(Idq_ref.q)) {
         tripFault(VSI_FAULT_INVALID_REFERENCE);
         return;
@@ -324,11 +325,11 @@ void singlePhaseInverterFollowing::setIdqRef(dqo_t Idq_ref) {
     _Idq_ref = {Idq_ref.d, Idq_ref.q, 0.0F};
 }
 
-void singlePhaseInverterFollowing::requestRun() {
+INV_FAST_CODE void singlePhaseInverterFollowing::requestRun() {
     if (_mode != VSI_FAULT) _run_requested = true;
 }
 
-void singlePhaseInverterFollowing::requestStop() {
+INV_FAST_CODE void singlePhaseInverterFollowing::requestStop() {
     if (_mode != VSI_FAULT) _run_requested = false;
 }
 
@@ -349,7 +350,7 @@ void singlePhaseInverterFollowing::setWRef(float32_t w_ref) {
     if (_mode == VSI_PWM_SETTLE) _pwm_settle_cycles = 0.0F;
 }
 
-vsi_mode_t singlePhaseInverterFollowing::getMode() const {
+INV_FAST_CODE vsi_mode_t singlePhaseInverterFollowing::getMode() const {
     return _mode;
 }
 
@@ -363,25 +364,25 @@ void singlePhaseInverterFollowing::requestSync() {
         setSyncOff();
 }
 
-void singlePhaseInverterFollowing::requestConnect() {
+INV_FAST_CODE void singlePhaseInverterFollowing::requestConnect() {
     if (_mode != VSI_FAULT) {
         _enabled = true;
         _connect_requested = true;
     }
 }
 
-void singlePhaseInverterFollowing::requestDisconnect() {
+INV_FAST_CODE void singlePhaseInverterFollowing::requestDisconnect() {
     if (_mode != VSI_FAULT) {
         _enabled = false;
         _connect_requested = false;
     }
 }
 
-void singlePhaseInverterFollowing::setGridConnected(bool connected) {
+INV_FAST_CODE void singlePhaseInverterFollowing::setGridConnected(bool connected) {
     _grid_connected = connected;
 }
 
-void singlePhaseInverterFollowing::setPwmEnabled(bool enabled) {
+INV_FAST_CODE void singlePhaseInverterFollowing::setPwmEnabled(bool enabled) {
     _pwm_enabled = enabled;
     if (!enabled) {
         _pwm_settle_cycles = 0.0F;
@@ -398,7 +399,7 @@ float32_t singlePhaseInverterFollowing::getPwmStartDutyTolerance() const {
     return _pwm_start_duty_tolerance;
 }
 
-void singlePhaseInverterFollowing::setPwmSettleCycles(uint16_t cycles) {
+INV_FAST_CODE void singlePhaseInverterFollowing::setPwmSettleCycles(uint16_t cycles) {
     if (_pwm_settle_min_cycles != cycles) {
         _pwm_settle_min_cycles = cycles;
         _pwm_settle_cycles = 0.0F;
@@ -469,7 +470,7 @@ bool singlePhaseInverterFollowing::setCurrentSogiGain(float32_t kr) {
 
 float32_t singlePhaseInverterFollowing::getCurrentSogiGain() const { return _current_sogi_kr; }
 
-bool singlePhaseInverterFollowing::setOutputPhaseAdvance(float32_t periods) {
+INV_FAST_CODE bool singlePhaseInverterFollowing::setOutputPhaseAdvance(float32_t periods) {
     if (!isfinite(periods) || periods < 0.0F || periods > 2.0F) return false;
     _output_phase_advance = periods;
     return true;
@@ -477,7 +478,7 @@ bool singlePhaseInverterFollowing::setOutputPhaseAdvance(float32_t periods) {
 
 float32_t singlePhaseInverterFollowing::getOutputPhaseAdvance() const { return _output_phase_advance; }
 
-bool singlePhaseInverterFollowing::setFeedforwardGain(float32_t gain) {
+INV_FAST_CODE bool singlePhaseInverterFollowing::setFeedforwardGain(float32_t gain) {
     if (!isfinite(gain) || gain < 0.5F || gain > 1.5F) return false;
     _feedforward_gain = gain;
     return true;
@@ -485,7 +486,7 @@ bool singlePhaseInverterFollowing::setFeedforwardGain(float32_t gain) {
 
 float32_t singlePhaseInverterFollowing::getFeedforwardGain() const { return _feedforward_gain; }
 
-void singlePhaseInverterFollowing::setCurrentLoopFromConnect(bool enabled) { _current_loop_from_connect = enabled; }
+INV_FAST_CODE void singlePhaseInverterFollowing::setCurrentLoopFromConnect(bool enabled) { _current_loop_from_connect = enabled; }
 
 bool singlePhaseInverterFollowing::getCurrentLoopFromConnect() const { return _current_loop_from_connect; }
 
@@ -498,7 +499,7 @@ bool singlePhaseInverterFollowing::freezePll(float32_t duration) {
 
 bool singlePhaseInverterFollowing::isPllFrozen() const { return _pll_freeze_remaining > 0.0F; }
 
-bool singlePhaseInverterFollowing::holdFeedforward(float32_t duration) {
+INV_FAST_CODE bool singlePhaseInverterFollowing::holdFeedforward(float32_t duration) {
     if (!isfinite(duration) || duration < 0.0F || duration > 1.0F) return false;
     _ff_hold_vd = isSyncWindowFull() ? _Vdq_avg.d : _Vdq.d;
     _ff_hold_remaining = duration;
@@ -507,13 +508,13 @@ bool singlePhaseInverterFollowing::holdFeedforward(float32_t duration) {
 
 bool singlePhaseInverterFollowing::isFeedforwardHeld() const { return _ff_hold_remaining > 0.0F; }
 
-bool singlePhaseInverterFollowing::setConnectionBlanking(float32_t from_command) {
+INV_FAST_CODE bool singlePhaseInverterFollowing::setConnectionBlanking(float32_t from_command) {
     if (!isfinite(from_command) || from_command < 0.0F || from_command > 0.5F) return false;
     _connection_blanking = from_command;
     return true;
 }
 
-bool singlePhaseInverterFollowing::setConnectWindow(float32_t from_command) {
+INV_FAST_CODE bool singlePhaseInverterFollowing::setConnectWindow(float32_t from_command) {
     if (!isfinite(from_command) || from_command < 0.0F || from_command > 0.9F) return false;
     _connect_window = from_command;
     return true;
@@ -523,7 +524,7 @@ float32_t singlePhaseInverterFollowing::getConnectWindow() const { return _conne
 
 float32_t singlePhaseInverterFollowing::getConnectionBlanking() const { return _connection_blanking; }
 
-bool singlePhaseInverterFollowing::notifyRelayCommand(float32_t close_delay) {
+INV_FAST_CODE bool singlePhaseInverterFollowing::notifyRelayCommand(float32_t close_delay) {
     if (!isfinite(close_delay) || close_delay < 0.0F || close_delay > 0.5F) return false;
     _close_delay = close_delay;
     _since_notify = 0.0F;
@@ -535,7 +536,7 @@ bool singlePhaseInverterFollowing::notifyRelayCommand(float32_t close_delay) {
 
 bool singlePhaseInverterFollowing::isContactPredicted() const { return _contact_passed; }
 
-void singlePhaseInverterFollowing::setExternalFeedforward(float32_t v_alpha, bool enabled) {
+INV_FAST_CODE void singlePhaseInverterFollowing::setExternalFeedforward(float32_t v_alpha, bool enabled) {
     _external_ff_v = isfinite(v_alpha) ? v_alpha : 0.0F;
     _external_ff_enabled = enabled && isfinite(v_alpha);
 }
@@ -544,13 +545,13 @@ uint16_t singlePhaseInverterFollowing::getPwmSettleCycles() const {
     return _pwm_settle_min_cycles;
 }
 
-bool singlePhaseInverterFollowing::isGridConnectionRequested() const {
+INV_FAST_CODE bool singlePhaseInverterFollowing::isGridConnectionRequested() const {
     return (_mode == VSI_GRID_CONNECT ||
            _mode == VSI_GRID_CONNECTED || _mode == VSI_RUN ||
            _mode == VSI_STOPPING);
 }
 
-bool singlePhaseInverterFollowing::isPwmRequested() const {
+INV_FAST_CODE bool singlePhaseInverterFollowing::isPwmRequested() const {
     if (_mode == VSI_FAULT) return false;
     return _mode == VSI_PWM_WAIT || _mode == VSI_PWM_SETTLE || isGridConnectionRequested();
 }
@@ -559,7 +560,7 @@ vsi_fault_reason_t singlePhaseInverterFollowing::getFaultReason() const {
     return _fault_reason;
 }
 
-void singlePhaseInverterFollowing::setGridQuality(bool good) {
+INV_FAST_CODE void singlePhaseInverterFollowing::setGridQuality(bool good) {
     _grid_quality_good = good;
     if (!good && _mode == VSI_VOLTAGE_SYNC) _sync_delay_counter = 0;
     if (!good &&
@@ -611,7 +612,7 @@ void singlePhaseInverterFollowing::enterMode(vsi_mode_t mode) {
     if (mode == VSI_PWM_WAIT) _pwm_enabled = false;
 }
 
-void singlePhaseInverterFollowing::updateMode() {
+INV_FAST_CODE void singlePhaseInverterFollowing::updateMode() {
     if (_mode == VSI_FAULT) return;
 
     if ((!_enabled || _resync_requested) && _mode != VSI_OFF &&
@@ -716,7 +717,7 @@ void singlePhaseInverterFollowing::updateMode() {
     }
 }
 
-bool singlePhaseInverterFollowing::synchronizationAligned() const {
+INV_FAST_CODE bool singlePhaseInverterFollowing::synchronizationAligned() const {
     // Judged on one-period averages (luizvilla/Core#7): instantaneous Vdq and w carry the
     // ripple of the grid harmonics and of any measurement offset.
     return _initialized && _grid_quality_good && isSyncWindowFull() &&
@@ -745,7 +746,7 @@ void singlePhaseInverterFollowing::resetSyncWindow() {
     _w_avg = 0.0F;
 }
 
-void singlePhaseInverterFollowing::updateSyncWindow() {
+INV_FAST_CODE void singlePhaseInverterFollowing::updateSyncWindow() {
     // Drop the sample leaving the window (the one _sync_win_len steps back), then add the new one.
     if (_sync_win_count >= _sync_win_len) {
         // pos < SYNC_WINDOW_MAX and len <= SYNC_WINDOW_MAX: one conditional wrap instead of a modulo.
@@ -806,14 +807,14 @@ void singlePhaseInverterFollowing::updateSyncWindow() {
     }
 }
 
-dqo_t singlePhaseInverterFollowing::getVdqAverage() const {
+INV_FAST_CODE dqo_t singlePhaseInverterFollowing::getVdqAverage() const {
     return isSyncWindowFull() ? _Vdq_avg : dqo_t{};
 }
 
-float32_t singlePhaseInverterFollowing::getwAverage() const {
+INV_FAST_CODE float32_t singlePhaseInverterFollowing::getwAverage() const {
     return isSyncWindowFull() ? _w_avg : 0.0F;
 }
 
-bool singlePhaseInverterFollowing::isSyncWindowFull() const {
+INV_FAST_CODE bool singlePhaseInverterFollowing::isSyncWindowFull() const {
     return _sync_win_full && _sync_win_count >= _sync_win_len;
 }

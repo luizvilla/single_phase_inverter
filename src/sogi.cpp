@@ -27,6 +27,7 @@
 
 #include "trigo.h"
 #include "sogi.h"
+#include "inverterFastCode.h"
 
 /**
  * @brief Constructor for the SogiPLL class.
@@ -60,7 +61,7 @@ void Sogi::init(float32_t Kr, float32_t Ts) {
  * @param params Reference to the SOGI parameters structure.
  * @return Clarke transformation result of the input signal.
  */
-clarke_t Sogi::calc(float32_t input, float32_t w0) {
+INV_FAST_CODE clarke_t Sogi::calc(float32_t input, float32_t w0) {
 
     float32_t coswt = 1.0F - 0.5F * (w0 * _Ts) * (w0 * _Ts);
     float32_t inv_sinwt = 1.0F / (w0 * _Ts);
