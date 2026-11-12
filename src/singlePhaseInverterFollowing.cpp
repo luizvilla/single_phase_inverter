@@ -155,9 +155,16 @@ float32_t singlePhaseInverterFollowing::calculateDuty(float32_t vgrid_meas, floa
         tripFault(VSI_FAULT_INVALID_CONTROL_STATE);
         return _duty_cycle;
     }
-    // Floating-point wrapping avoids integer conversion overflow for large angles.
-    _theta = fmodf(next_theta, 2.0F * PI);
-    if (_theta < 0.0F) _theta += 2.0F * PI;
+    // Wrap to [0, 2*pi): one conditional step covers |w*Ts| < 2*pi (every normal tick, no fmodf call);
+    // fmodf only if the angle is still outside (never in normal operation).
+    float32_t theta = next_theta;
+    if (theta >= 2.0F * PI) theta -= 2.0F * PI;
+    else if (theta < 0.0F) theta += 2.0F * PI;
+    if (theta >= 2.0F * PI || theta < 0.0F) {
+        theta = fmodf(next_theta, 2.0F * PI);
+        if (theta < 0.0F) theta += 2.0F * PI;
+    }
+    _theta = theta;
     INV_TIMING_PROBE(1);
 
     // Tune the SOGI to the PLL estimate so its quadrature output stays balanced
@@ -741,7 +748,10 @@ void singlePhaseInverterFollowing::resetSyncWindow() {
 void singlePhaseInverterFollowing::updateSyncWindow() {
     // Drop the sample leaving the window (the one _sync_win_len steps back), then add the new one.
     if (_sync_win_count >= _sync_win_len) {
-        const uint16_t old = static_cast<uint16_t>((_sync_win_pos + SYNC_WINDOW_MAX - _sync_win_len) % SYNC_WINDOW_MAX);
+        // pos < SYNC_WINDOW_MAX and len <= SYNC_WINDOW_MAX: one conditional wrap instead of a modulo.
+        int32_t old_i = static_cast<int32_t>(_sync_win_pos) - static_cast<int32_t>(_sync_win_len);
+        if (old_i < 0) old_i += SYNC_WINDOW_MAX;
+        const uint16_t old = static_cast<uint16_t>(old_i);
         _sync_sum_vd -= _sync_win_vd[old];
         _sync_sum_vq -= _sync_win_vq[old];
         _sync_sum_w -= _sync_win_w[old];
@@ -755,7 +765,7 @@ void singlePhaseInverterFollowing::updateSyncWindow() {
     _sync_shadow_vd += _Vdq.d;
     _sync_shadow_vq += _Vdq.q;
     _sync_shadow_w += _w;
-    _sync_win_pos = static_cast<uint16_t>((_sync_win_pos + 1) % SYNC_WINDOW_MAX);
+    if (++_sync_win_pos >= SYNC_WINDOW_MAX) _sync_win_pos = 0;
     if (_sync_win_count < SYNC_WINDOW_MAX) ++_sync_win_count;
     if (_sync_win_count >= _sync_win_len) _sync_win_full = true;
     const uint16_t n = _sync_win_count < _sync_win_len ? _sync_win_count : _sync_win_len;
