@@ -22,6 +22,7 @@
 #include <math.h>
 #include <errno.h>
 #include "inverterValidation.h"
+#include "inverterTiming.h"
 
 // Constructor for singlePhaseInverterFollowing
 singlePhaseInverterFollowing::singlePhaseInverterFollowing() : _w(0.0F) {}
@@ -120,6 +121,11 @@ int8_t singlePhaseInverterFollowing::init(float32_t V_bus, float32_t grid_Vpk, f
 }
 
 // Calculate function for singlePhaseInverterFollowing
+#ifdef TIMING_HARNESS
+volatile uint32_t inv_timing_cycles[INV_TIMING_PROBE_COUNT];
+volatile uint32_t inv_timing_seq;
+#endif
+
 float32_t singlePhaseInverterFollowing::calculateDuty(float32_t vgrid_meas, float32_t igrid_meas) {
     if (!_initialized) {
         tripFault(VSI_FAULT_INVALID_CONFIGURATION);
@@ -135,6 +141,7 @@ float32_t singlePhaseInverterFollowing::calculateDuty(float32_t vgrid_meas, floa
         return _duty_cycle;
     }
 
+    INV_TIMING_PROBE(0);
     if (_pll_freeze_remaining > 0.0F) {
         // Connection hold: the PLL integrator is held and the frequency latched; the angle free-runs.
         _w = _pll_freeze_w;
@@ -151,6 +158,7 @@ float32_t singlePhaseInverterFollowing::calculateDuty(float32_t vgrid_meas, floa
     // Floating-point wrapping avoids integer conversion overflow for large angles.
     _theta = fmodf(next_theta, 2.0F * PI);
     if (_theta < 0.0F) _theta += 2.0F * PI;
+    INV_TIMING_PROBE(1);
 
     // Tune the SOGI to the PLL estimate so its quadrature output stays balanced
     // off-nominal; at a fixed w_ref, Vq carries a 2w ripple far above the sync
@@ -159,6 +167,7 @@ float32_t singlePhaseInverterFollowing::calculateDuty(float32_t vgrid_meas, floa
     const float32_t w_sogi = fminf(fmaxf(_w, 0.95F * _w_ref), 1.05F * _w_ref);
     _Vab = _sogi_v.calc(vgrid_meas, w_sogi);
     _Iab = _sogi_i.calc(igrid_meas, w_sogi);
+    INV_TIMING_PROBE(2);
 
     _Vdq = Transform::rotation_to_dqo(_Vab, _theta);
     _Idq = Transform::rotation_to_dqo(_Iab, _theta);
@@ -167,7 +176,9 @@ float32_t singlePhaseInverterFollowing::calculateDuty(float32_t vgrid_meas, floa
         tripFault(VSI_FAULT_INVALID_CONTROL_STATE);
         return _duty_cycle;
     }
+    INV_TIMING_PROBE(3);
     updateSyncWindow();
+    INV_TIMING_PROBE(4);
 
     updateMode();
     // Connection sequence (notifyRelayCommand): time since the relay command; at the predicted contact an external
@@ -192,6 +203,7 @@ float32_t singlePhaseInverterFollowing::calculateDuty(float32_t vgrid_meas, floa
                               (_current_loop_from_connect && _mode == VSI_GRID_CONNECT);
     const bool ff_modes = _mode == VSI_PWM_WAIT || _mode == VSI_PWM_SETTLE || _mode == VSI_GRID_CONNECT;
     dqo_t pi_out = {};
+    INV_TIMING_PROBE(5);
     if (current_loop) {
         const float32_t id_ref = _mode == VSI_RUN ? _Idq_ref.d : 0.0F;
         const float32_t iq_ref = _mode == VSI_RUN ? _Idq_ref.q : 0.0F;
@@ -205,6 +217,7 @@ float32_t singlePhaseInverterFollowing::calculateDuty(float32_t vgrid_meas, floa
         _Vdq_output = ff_modes ? ff : dqo_t{};
     }
 
+    INV_TIMING_PROBE(6);
     if (_mode == VSI_FAULT) {
         _Vdq_output = {};
         pi_out = {};
@@ -243,6 +256,8 @@ float32_t singlePhaseInverterFollowing::calculateDuty(float32_t vgrid_meas, floa
             _duty_cycle = 0.5F;
         }
     }
+    INV_TIMING_PROBE(7);
+    INV_TIMING_DONE();
     return _duty_cycle;
 
 }
