@@ -269,8 +269,9 @@ public:
      * @param kp Proportional gain in volts per ampere; finite and positive. Default 0.001.
      * @param ti Integral time in seconds; finite and positive. Default 0.0003.
      * @return False for invalid values (configuration unchanged), true otherwise.
-     * @note Applied at once, also while the current loop runs (the integral state is kept).
-     * Preserved across init(). Call from the control task.
+     * @note Applied at once, also while the current loop runs: bumpless, each PI's integral term (its output minus
+     * Kp·error of the last calculateDuty()) is carried over to the new gains, so only the proportional part changes,
+     * by (new Kp − old Kp)·error. Preserved across init(). Call from the control task.
      */
     bool setCurrentPiGains(float32_t kp, float32_t ti);
 
@@ -537,6 +538,9 @@ private:
     float32_t _current_kp = 0.001F;      ///< Current-PI proportional gain (V/A).
     float32_t _current_ti = 0.0003F;     ///< Current-PI integral time (s).
     float32_t _current_limit = 30.0F;    ///< Current-PI output limit (V).
+    bool _current_pi_running = false;    ///< The current PIs ran in the last calculateDuty() (bumpless gain changes).
+    float32_t _current_pi_err[2] = {};   ///< Their last errors (d, q), A.
+    float32_t _current_pi_out[2] = {};   ///< Their last outputs (d, q), V.
     float32_t _output_phase_advance = 0.0F; ///< Output-rotation advance (control periods).
     float32_t _feedforward_gain = 1.0F; ///< Scale of the grid-voltage feedforward.
     FeedforwardSource _ff_source = FeedforwardSource::MEASURED; ///< Signals of the voltage feedforward.

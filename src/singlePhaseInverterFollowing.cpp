@@ -243,10 +243,14 @@ INV_FAST_CODE float32_t singlePhaseInverterFollowing::calculateDuty(float32_t vg
         const float32_t iq_ref = _mode == VSI_RUN ? _Idq_ref.q : 0.0F;
         pi_out.d = _current_d_pi.calculateWithReturn(id_ref, _Idq.d);
         pi_out.q = _current_q_pi.calculateWithReturn(iq_ref, _Idq.q);
+        _current_pi_err[0] = id_ref - _Idq.d; _current_pi_err[1] = iq_ref - _Idq.q;
+        _current_pi_out[0] = pi_out.d; _current_pi_out[1] = pi_out.q;
+        _current_pi_running = true;
         _Vdq_output = {ff.d + pi_out.d, ff.q + pi_out.q, 0.0F};
     } else {
         _current_d_pi.reset();
         _current_q_pi.reset();
+        _current_pi_running = false;
         // Compute grid-matching duty while waiting for a near-neutral PWM start.
         _Vdq_output = ff_modes ? ff : dqo_t{};
     }
@@ -461,6 +465,7 @@ int8_t singlePhaseInverterFollowing::initCurrentPis() {
     if (q_result != 0) return q_result;
     _current_d_pi.reset();
     _current_q_pi.reset();
+    _current_pi_running = false;
     return 0;
 }
 
@@ -470,6 +475,11 @@ bool singlePhaseInverterFollowing::currentLoopActive() const {
 
 bool singlePhaseInverterFollowing::setCurrentPiGains(float32_t kp, float32_t ti) {
     if (!inverter_validation::positive(kp) || !inverter_validation::positive(ti)) return false;
+    // Bumpless while running: the integral terms (output − Kp·error) carry over; Pid::reset(u) sets the integral so that
+    // the integral term is u under the new Kp and Ti (pid.cpp: output = Kp·(e + ∫e/Ti)).
+    const bool bumpless = _initialized && _current_pi_running;
+    const float32_t ui_d = _current_pi_out[0] - _current_kp * _current_pi_err[0];
+    const float32_t ui_q = _current_pi_out[1] - _current_kp * _current_pi_err[1];
     _current_kp = kp;
     _current_ti = ti;
     _current_pi_params.Kp = kp;
@@ -479,6 +489,10 @@ bool singlePhaseInverterFollowing::setCurrentPiGains(float32_t kp, float32_t ti)
         _current_d_pi.setTi(ti);
         _current_q_pi.setKp(kp);
         _current_q_pi.setTi(ti);
+        if (bumpless) {
+            _current_d_pi.reset(ui_d);
+            _current_q_pi.reset(ui_q);
+        }
     }
     return true;
 }
@@ -616,6 +630,7 @@ void singlePhaseInverterFollowing::tripFault(vsi_fault_reason_t reason) {
     if (_initialized) {
         _current_d_pi.reset();
         _current_q_pi.reset();
+        _current_pi_running = false;
         if (reason == VSI_FAULT_INVALID_CONTROL_STATE) {
             // Discard poisoned filter/PLL history so recovery can observe a healthy grid.
             resetQuadratureFilters();
@@ -668,6 +683,7 @@ INV_FAST_CODE void singlePhaseInverterFollowing::updateMode() {
     case VSI_OFF:
         _current_d_pi.reset();
         _current_q_pi.reset();
+        _current_pi_running = false;
         if (_enabled) {
             _resync_requested = false;
             enterMode(VSI_VOLTAGE_SYNC);
