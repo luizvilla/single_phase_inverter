@@ -790,15 +790,26 @@ INV_FAST_CODE void singlePhaseInverterFollowing::updateSyncWindow() {
             const uint16_t len = syncWindowLength(_w_avg);
             if (len != _sync_win_len) {
                 // Resize: adjust the running sums by the samples entering or leaving.
-                while (_sync_win_len < len && _sync_win_len < _sync_win_count) {
-                    const uint16_t i = static_cast<uint16_t>((_sync_win_pos + SYNC_WINDOW_MAX - _sync_win_len - 1) % SYNC_WINDOW_MAX);
-                    _sync_sum_vd += _sync_win_vd[i]; _sync_sum_vq += _sync_win_vq[i]; _sync_sum_w += _sync_win_w[i];
-                    ++_sync_win_len;
+                // The index walks one slot per sample with a conditional wrap, no modulo per sample.
+                if (_sync_win_len < len && _sync_win_len < _sync_win_count) {
+                    // Grow: the sample entering is the one just before the oldest (pos - len - 1).
+                    int32_t i = static_cast<int32_t>(_sync_win_pos) - static_cast<int32_t>(_sync_win_len) - 1;
+                    if (i < 0) i += SYNC_WINDOW_MAX;
+                    while (_sync_win_len < len && _sync_win_len < _sync_win_count) {
+                        _sync_sum_vd += _sync_win_vd[i]; _sync_sum_vq += _sync_win_vq[i]; _sync_sum_w += _sync_win_w[i];
+                        ++_sync_win_len;
+                        if (--i < 0) i += SYNC_WINDOW_MAX;
+                    }
                 }
-                while (_sync_win_len > len) {
-                    const uint16_t i = static_cast<uint16_t>((_sync_win_pos + SYNC_WINDOW_MAX - _sync_win_len) % SYNC_WINDOW_MAX);
-                    _sync_sum_vd -= _sync_win_vd[i]; _sync_sum_vq -= _sync_win_vq[i]; _sync_sum_w -= _sync_win_w[i];
-                    --_sync_win_len;
+                if (_sync_win_len > len) {
+                    // Shrink: the sample leaving is the oldest (pos - len).
+                    int32_t i = static_cast<int32_t>(_sync_win_pos) - static_cast<int32_t>(_sync_win_len);
+                    if (i < 0) i += SYNC_WINDOW_MAX;
+                    while (_sync_win_len > len) {
+                        _sync_sum_vd -= _sync_win_vd[i]; _sync_sum_vq -= _sync_win_vq[i]; _sync_sum_w -= _sync_win_w[i];
+                        --_sync_win_len;
+                        if (++i >= SYNC_WINDOW_MAX) i = 0;
+                    }
                 }
             }
         }
