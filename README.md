@@ -1,8 +1,8 @@
 # single_phase_inverter
 
-Two independent controllers use SOGI quadrature signals and dq PI loops:
+Two independent controllers use quadrature signals and dq PI loops:
 
-- `singlePhaseInverterFollowing` tracks grid phase with a PLL and controls current through synchronization and connection modes.
+- `singlePhaseInverterFollowing` tracks grid phase with a PLL and controls current through synchronization and connection modes. Its quadrature signals come from a first-order all-pass filter (`Apf`, prewarped Tustin, tuned to the clamped PLL frequency): the PLL uses the voltage SOGI alpha and APF(SOGI alpha); the voltage feedforward uses the measured voltage and its APF; the current uses the measured current and its APF.
 - `singlePhaseInverterForming` generates phase from a frequency reference and uses cascaded voltage/current loops.
 
 Each class lives in its own header and source file. Include the specific header,
@@ -260,7 +260,7 @@ The runtime example uses FOLLOWING; FORMING tuning is listed for completeness.
 | Inverter current PI | FOLLOWING Kp=0.001, Ti=0.0003 s; each output correction limited to ±30 V, added to grid-voltage feedforward. | Tune for the actual L/LCL filter, resistance, delay and damping. ±30 V is a voltage correction limit, not a 30 A current limit. Verify cross-axis coupling and saturation behavior. |
 | Inverter RUN reference | d/q current references are applied directly, without clamp, ramp, or power limit. | Define peak/RMS convention, active/reactive priority, total current-vector limit and current/power slew. Verify measured overcurrent protection separately. |
 | Modulation | Controller duty is `0.5 + Valpha/(2*Vbus)` without clamping; example initializes paired unipolar PWM. | Validate factor of two, bridge polarity, actual output amplitude, paired updates, carrier alignment, duty limits and anti-windup when modulation saturates. |
-| PLL/SOGI | SOGI gain 500; PLL tuned for nominal one-period rise time and damping 0.7; correction bounds ±10 nominal angular frequency. | Check gain units, phase/amplitude errors, acquisition, harmonics, DC offset, delay and frequency excursions. PLL bounds can permit unrealistic estimates before alignment is checked. |
+| PLL/SOGI/APF | SOGI gain 500; PLL beta = APF(SOGI alpha), APF tuned to the PLL frequency clamped to ±5 %; PLL tuned for nominal one-period rise time and damping 0.7; correction bounds ±10 nominal angular frequency. | Check gain units, phase/amplitude errors, acquisition, harmonics, DC offset, delay and frequency excursions. PLL bounds can permit unrealistic estimates before alignment is checked. |
 | Initial synchronization | Positive Vd within ±10% nominal peak, abs(Vq)<0.1 V, frequency within ±5%; 100 ms of consecutive calls (counted from Ts). | Confirm tolerances against sensor noise and distortion. At 325 V peak, 0.1 V q corresponds to about 0.018° under the small-angle assumption. |
 | PWM before closure | PWM starts at 50%, then links the computed waveform near neutral (default ±0.01 duty). Configurable measured periods in PWM_SETTLE (default ten, zero holds indefinitely), with application PWM acknowledgement and relay request off. | Validate actual terminal voltage across open contacts and filter settling. Matching measured grid feedforward does not itself prove inverter-side voltage matching. Confirm required duration on hardware. |
 | Relay integration | GRID_CONNECT waits up to 1 s for independent contact feedback. main.cpp has no relay output/feedback path and never requests connection. | Confirm pin mapping, contact delay/bounce, welded-contact detection, zero-crossing strategy and startup feedback plausibility. Never substitute the relay request for physical feedback. |

@@ -21,16 +21,22 @@
 #pragma once
 
 #include "sogi.h"
+#include "apf.h"
 #include "transform.h"
 #include "filters.h"
 #include "inverterTypes.h"
 
 /**
  * @class singlePhaseInverterFollowing
- * @brief Control a single-phase VSI using SOGI quadrature signals and dq PI loops.
+ * @brief Control a single-phase VSI using SOGI/APF quadrature signals and dq PI loops.
  *
- * Uses a PLL to track grid phase, then applies current control with
- * measured-voltage feedforward through an explicit operating state machine.
+ * Quadrature signals (Core2 ADR 0007): every beta is built by a first-order all-pass
+ * filter (Apf) tuned, like the voltage SOGI, to the PLL frequency low-passed (10 ms) and clamped.
+ * - PLL: alpha = voltage SOGI alpha, beta = APF(SOGI alpha); its Vq drives the PLL PI.
+ * - Voltage feedforward: alpha = the measured grid voltage, beta = APF(measured voltage).
+ * - Current: alpha = the measured current, beta = APF(measured current).
+ * The current PIs regulate the current dq components and add the feedforward dq voltage,
+ * through an explicit operating state machine.
  *
  * @pre Call init() before using the controller. Call calculateDuty() once per
  * sampling period, then read its cached measurements and commands as needed.
@@ -67,7 +73,7 @@ public:
     /**
      * @brief Advance phase estimation and control by one sampling period.
      *
-     * Updates SOGI signals, dq measurements, current control, and power.
+     * Updates the SOGI/APF signals, dq measurements, current control, and power.
      * FOLLOWING qualifies, on values averaged over one nominal grid period, positive
      * d voltage within 10% of the nominal peak, frequency within 5% of its reference,
      * and |Vq| below 1% of the nominal peak, for 100 ms of consecutive calls before
@@ -79,8 +85,9 @@ public:
      * then requests relay closure. Connection/opening feedback has a
      * one-second timeout. These are control defaults, not grid protection limits.
      *
-     * @param vgrid_meas Instantaneous measured grid voltage in volts.
-     * @param igrid_meas Instantaneous measured grid current in amperes.
+     * @param vgrid_meas Measured grid voltage in volts (the application may pass the average of the
+     * ADC samples of the period). Input of the voltage SOGI and of the feedforward.
+     * @param igrid_meas Measured grid current in amperes (same remark). Alpha of the current.
      * @return Leg-1 duty ratio: output alpha voltage / (2 * V_bus) + 0.5.
      * The result is not clamped to [0, 1]. Pass it to the hardware API that
      * updates both bridge legs according to the selected modulation scheme.
@@ -97,11 +104,17 @@ public:
     /** @brief Read the latest dq voltage command. @return d/q voltage in volts. */
     dqo_t getVdqOut();
 
-    /** @brief Read the SOGI current signals. @return Alpha/beta current in amperes. */
+    /** @brief Read the current signals: alpha = measured current, beta = APF(alpha). In amperes. */
     clarke_t getIab();
 
-    /** @brief Read the SOGI voltage signals. @return Alpha/beta voltage in volts. */
+    /** @brief Read the PLL voltage signals: alpha = SOGI alpha, beta = APF(SOGI alpha). In volts. */
     clarke_t getVab();
+
+    /** @brief Read the feedforward voltage signals: alpha = measured voltage, beta = APF(alpha). In volts. */
+    clarke_t getVabFeedforward();
+
+    /** @brief Read the feedforward dq voltage (park of getVabFeedforward()), before the feedforward gain. */
+    dqo_t getVdqFeedforward();
 
     /** @brief Read the bridge output voltage command. @return Alpha/beta voltage in volts. */
     clarke_t getVabOutput();
@@ -273,20 +286,6 @@ public:
     float32_t getCurrentPiLimit() const;
 
     /**
-     * @brief Set the resonance gain of the current SOGI, separately from the voltage SOGI.
-     * @param kr Gain in rad/s; finite and positive, and kr * Ts < 1 once init() has run.
-     * Default 500 (the voltage SOGI's gain). In the dq frame the SOGI acts as a first-order
-     * low-pass at kr / 2 on the measured current, which bounds the current-loop bandwidth.
-     * @return False for invalid values or while the current loop runs (GRID_CONNECTED, RUN,
-     * STOPPING); configuration unchanged. True otherwise.
-     * @note Resets the current SOGI state. Preserved across init(). Call from the control task.
-     */
-    bool setCurrentSogiGain(float32_t kr);
-
-    /** @brief Read the current-SOGI resonance gain (rad/s). */
-    float32_t getCurrentSogiGain() const;
-
-    /**
      * @brief Advance the output rotation to compensate the actuation delay.
      * @param periods Advance in control periods, in [0, 2]: the output voltage is rotated by
      * theta + periods * w * Ts. Default 0.
@@ -299,7 +298,7 @@ public:
     float32_t getOutputPhaseAdvance() const;
 
     /**
-     * @brief Scale the grid-voltage feedforward (the measured Vdq added to the current PI output).
+     * @brief Scale the grid-voltage feedforward (the feedforward Vdq added to the current PI output).
      * @param gain Factor in [0.5, 1.5]; default 1. Above 1 the inverter-side voltage leads the grid in
      * amplitude, so current flows out of the inverter when the relay closes (bench step 1c/2).
      * @return False for invalid values (configuration unchanged), true otherwise.
@@ -437,7 +436,7 @@ public:
     void setSyncOff();
 
     /**
-     * @brief Update the frequency reference used by phase control and both SOGIs.
+     * @brief Update the frequency reference used by phase control, the SOGI and the APFs.
      * @param w_ref Positive finite reference frequency in radians per second.
      * Must satisfy w_ref * Ts < pi; invalid values latch INVALID_REFERENCE
      * and leave the previous reference unchanged.
@@ -461,13 +460,15 @@ private:
     bool _initialized = false; ///< True only after all controller initialization succeeds.
     dqo_t _power;
 
-    dqo_t _Vdq;
+    dqo_t _Vdq;          ///< PLL dq voltage: park(SOGI alpha, APF(SOGI alpha)).
+    dqo_t _Vdq_ff;       ///< Feedforward dq voltage: park(measured voltage, APF(measured voltage)).
     dqo_t _Vdq_output;
 
     dqo_t _Idq;
     dqo_t _Idq_ref;
 
-    clarke_t _Vab;
+    clarke_t _Vab;       ///< PLL alpha/beta voltage.
+    clarke_t _Vab_ff;    ///< Feedforward alpha/beta voltage.
     clarke_t _Vab_output;
     clarke_t _Iab;
     float32_t _Vond;
@@ -475,8 +476,12 @@ private:
     float32_t _grid_Vpk;
     float32_t _Ts;
 
-    Sogi _sogi_i;
     Sogi _sogi_v;
+    Apf _apf_v;          ///< Beta of the PLL voltage, from the SOGI alpha.
+    Apf _apf_v_ff;       ///< Beta of the feedforward voltage, from the measured voltage.
+    Apf _apf_i;          ///< Beta of the current, from the measured current.
+    /** @brief Clear the voltage SOGI and the three APFs. */
+    void resetQuadratureFilters();
 
     PidParams _pll_pi_params;    ///< PI controller parameters.
     Pid _pll_pi;                 ///< PI controller.
@@ -488,6 +493,8 @@ private:
     float32_t _theta;        ///< Current phase angle.
     float32_t _w;            ///< Angular frequency.
     float32_t _w_ref;        ///< Reference angular frequency.
+    float32_t _w_tune;       ///< Low-passed PLL frequency that tunes the SOGI and the APFs (rad/s).
+    float32_t _w_tune_k;     ///< Low-pass coefficient Ts / (Ts + tau), set by init().
 
     float32_t _duty_cycle;            ///< Internal duty cycle.
 
@@ -510,7 +517,6 @@ private:
     float32_t _current_kp = 0.001F;      ///< Current-PI proportional gain (V/A).
     float32_t _current_ti = 0.0003F;     ///< Current-PI integral time (s).
     float32_t _current_limit = 30.0F;    ///< Current-PI output limit (V).
-    float32_t _current_sogi_kr = 500.0F; ///< Current-SOGI resonance gain (rad/s).
     float32_t _output_phase_advance = 0.0F; ///< Output-rotation advance (control periods).
     float32_t _feedforward_gain = 1.0F; ///< Scale of the grid-voltage feedforward.
     bool _current_loop_from_connect = false; ///< Current PI from GRID_CONNECT.

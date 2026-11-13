@@ -25,6 +25,21 @@
 #include "inverterTiming.h"
 #include "inverterFastCode.h"
 
+namespace {
+/** Voltage SOGI resonance gain (rad/s). */
+constexpr float32_t VOLTAGE_SOGI_KR = 500.0F;
+/** Time constant of the low-pass on the PLL frequency that tunes the SOGI and the APFs (s). Tuned to the
+ * instantaneous estimate, a PLL frequency above the grid's makes both filters lead, which raises Vq and the
+ * estimate further: loop gain Kp·V·(2/Kr + 1/(2·w0)) = 0.84 (SOGI) + 0.33 (APF) = 1.17 > 1, a limit cycle between
+ * the ±5 % clamps (Core2 ADR 0007). The low-pass is stable from about 0.8 ms; 10 ms locks in 0.2 s (L0-GFL-02). */
+constexpr float32_t TUNING_FREQUENCY_TAU = 0.010F;
+
+/** Park transform with cos/sin of the angle computed once for all signals of the period. */
+inline dqo_t park(clarke_t x, float32_t cos_theta, float32_t sin_theta) {
+    return {x.alpha * cos_theta + x.beta * sin_theta, -x.alpha * sin_theta + x.beta * cos_theta, 0.0F};
+}
+}  // namespace
+
 // Constructor for singlePhaseInverterFollowing
 singlePhaseInverterFollowing::singlePhaseInverterFollowing() : _w(0.0F) {}
 
@@ -46,12 +61,13 @@ int8_t singlePhaseInverterFollowing::init(float32_t V_bus, float32_t grid_Vpk, f
     float32_t xsi = 0.7F;
     float32_t Kp = 2 * wn * xsi / grid_Vpk;
     float32_t Ki = (wn * wn) / grid_Vpk;
-    float32_t Kr = 500.0;
 
     _grid_Vpk = grid_Vpk;
     _w = grid_w0;
     _w_ref = grid_w0;
+    _w_tune = grid_w0;
     _Ts = Ts;
+    _w_tune_k = Ts / (Ts + TUNING_FREQUENCY_TAU);
     _sync_min_delay = static_cast<uint32_t>(lroundf(SYNC_MIN_TIME / Ts));
     if (_sync_min_delay < 1U) _sync_min_delay = 1U;
     _sync_voltage_tolerance = 0.01F * grid_Vpk;
@@ -59,8 +75,7 @@ int8_t singlePhaseInverterFollowing::init(float32_t V_bus, float32_t grid_Vpk, f
     _theta = 0;
     _V_bus = V_bus;
 
-    _sogi_v.init(Kr, _Ts);
-    _sogi_i.init(_current_sogi_kr, _Ts);
+    resetQuadratureFilters();
 
     _pll_pi_params.Ts = Ts;
     _pll_pi_params.Td = 0.0;
@@ -69,11 +84,6 @@ int8_t singlePhaseInverterFollowing::init(float32_t V_bus, float32_t grid_Vpk, f
     _pll_pi_params.Kp = Kp;
     _pll_pi_params.lower_bound = -10.0F * _w_ref;
     _pll_pi_params.upper_bound = 10.0F * _w_ref;
-
-    if (_current_sogi_kr * _Ts >= 1.0F) {
-        tripFault(VSI_FAULT_INVALID_CONFIGURATION);
-        return -EINVAL;
-    }
 
     if (!inverter_validation::positive(Kp) || !inverter_validation::positive(Ki) ||
         !inverter_validation::positive(_pll_pi_params.Ti) ||
@@ -101,9 +111,11 @@ int8_t singlePhaseInverterFollowing::init(float32_t V_bus, float32_t grid_Vpk, f
     }
 
     _Vdq = {};
+    _Vdq_ff = {};
     _Idq = {};
     _Vdq_output = {};
     _Vab = {};
+    _Vab_ff = {};
     _Iab = {};
     _Vab_output = {};
     _power = {};
@@ -170,18 +182,27 @@ INV_FAST_CODE float32_t singlePhaseInverterFollowing::calculateDuty(float32_t vg
     _theta = theta;
     INV_TIMING_PROBE(1);
 
-    // Tune the SOGI to the PLL estimate so its quadrature output stays balanced
-    // off-nominal; at a fixed w_ref, Vq carries a 2w ripple far above the sync
-    // tolerance. The estimate is clamped to the qualification window (±5 %) so
-    // the SOGI-PLL loop cannot run away during lock transients.
-    const float32_t w_sogi = fminf(fmaxf(_w, 0.95F * _w_ref), 1.05F * _w_ref);
-    _Vab = _sogi_v.calc(vgrid_meas, w_sogi);
-    _Iab = _sogi_i.calc(igrid_meas, w_sogi);
+    // Tune the SOGI and the APFs to the PLL estimate so their quadrature outputs stay
+    // balanced off-nominal; at a fixed w_ref, Vq carries a 2w ripple far above the sync
+    // tolerance. The estimate is low-passed (TUNING_FREQUENCY_TAU: tuned to the instantaneous
+    // estimate the loop is unstable) and clamped to the qualification window (±5 %) so
+    // the PLL loop cannot run away during lock transients.
+    // Quadrature (ADR 0007): PLL beta = APF(SOGI alpha); feedforward and current beta = APF(measurement).
+    _w_tune += (_w - _w_tune) * _w_tune_k;
+    const float32_t w_sogi = fminf(fmaxf(_w_tune, 0.95F * _w_ref), 1.05F * _w_ref);
+    const float32_t v_alpha = _sogi_v.calc(vgrid_meas, w_sogi).alpha;
+    _Vab = {v_alpha, _apf_v.calc(v_alpha, w_sogi), 0.0F};
+    _Vab_ff = {vgrid_meas, _apf_v_ff.calc(vgrid_meas, w_sogi), 0.0F};
+    _Iab = {igrid_meas, _apf_i.calc(igrid_meas, w_sogi), 0.0F};
     INV_TIMING_PROBE(2);
 
-    _Vdq = Transform::rotation_to_dqo(_Vab, _theta);
-    _Idq = Transform::rotation_to_dqo(_Iab, _theta);
+    const float32_t cos_theta = ot_cos(_theta);
+    const float32_t sin_theta = ot_sin(_theta);
+    _Vdq = park(_Vab, cos_theta, sin_theta);
+    _Vdq_ff = park(_Vab_ff, cos_theta, sin_theta);
+    _Idq = park(_Iab, cos_theta, sin_theta);
     if (!isfinite(_w) || !isfinite(_Vdq.d) || !isfinite(_Vdq.q) ||
+        !isfinite(_Vdq_ff.d) || !isfinite(_Vdq_ff.q) ||
         !isfinite(_Idq.d) || !isfinite(_Idq.q)) {
         tripFault(VSI_FAULT_INVALID_CONTROL_STATE);
         return _duty_cycle;
@@ -204,11 +225,12 @@ INV_FAST_CODE float32_t singlePhaseInverterFollowing::calculateDuty(float32_t vg
             if (_connection_blanking > _since_notify) holdFeedforward(_connection_blanking - _since_notify);
         }
     }
-    // Feedforward: the measured grid voltage, or the held (synthesized) one during a connection hold.
+    // Feedforward: the measured grid voltage (park of the measurement and its APF), or the held
+    // (synthesized) one during a connection hold.
     const bool ff_hold = _ff_hold_remaining > 0.0F;
     if (ff_hold) _ff_hold_remaining -= _Ts;
-    const dqo_t ff = {_feedforward_gain * (ff_hold ? _ff_hold_vd : _Vdq.d),
-                      _feedforward_gain * (ff_hold ? 0.0F : _Vdq.q), 0.0F};
+    const dqo_t ff = {_feedforward_gain * (ff_hold ? _ff_hold_vd : _Vdq_ff.d),
+                      _feedforward_gain * (ff_hold ? 0.0F : _Vdq_ff.q), 0.0F};
     const bool current_loop = _mode == VSI_RUN || _mode == VSI_GRID_CONNECTED || _mode == VSI_STOPPING ||
                               (_current_loop_from_connect && _mode == VSI_GRID_CONNECT);
     const bool ff_modes = _mode == VSI_PWM_WAIT || _mode == VSI_PWM_SETTLE || _mode == VSI_GRID_CONNECT;
@@ -294,6 +316,21 @@ clarke_t singlePhaseInverterFollowing::getIab() {
 
 INV_FAST_CODE clarke_t singlePhaseInverterFollowing::getVab() {
     return _Vab;
+}
+
+clarke_t singlePhaseInverterFollowing::getVabFeedforward() {
+    return _Vab_ff;
+}
+
+dqo_t singlePhaseInverterFollowing::getVdqFeedforward() {
+    return _Vdq_ff;
+}
+
+void singlePhaseInverterFollowing::resetQuadratureFilters() {
+    _sogi_v.init(VOLTAGE_SOGI_KR, _Ts);
+    _apf_v.init(_Ts);
+    _apf_v_ff.init(_Ts);
+    _apf_i.init(_Ts);
 }
 
 clarke_t singlePhaseInverterFollowing::getVabOutput() {
@@ -462,16 +499,6 @@ bool singlePhaseInverterFollowing::setCurrentPiLimit(float32_t limit) {
 
 float32_t singlePhaseInverterFollowing::getCurrentPiLimit() const { return _current_limit; }
 
-bool singlePhaseInverterFollowing::setCurrentSogiGain(float32_t kr) {
-    if (!inverter_validation::positive(kr) || currentLoopActive()) return false;
-    if (_initialized && kr * _Ts >= 1.0F) return false;
-    _current_sogi_kr = kr;
-    if (_initialized) _sogi_i.init(kr, _Ts);
-    return true;
-}
-
-float32_t singlePhaseInverterFollowing::getCurrentSogiGain() const { return _current_sogi_kr; }
-
 INV_FAST_CODE bool singlePhaseInverterFollowing::setOutputPhaseAdvance(float32_t periods) {
     if (!isfinite(periods) || periods < 0.0F || periods > 2.0F) return false;
     _output_phase_advance = periods;
@@ -583,10 +610,11 @@ void singlePhaseInverterFollowing::tripFault(vsi_fault_reason_t reason) {
         _current_q_pi.reset();
         if (reason == VSI_FAULT_INVALID_CONTROL_STATE) {
             // Discard poisoned filter/PLL history so recovery can observe a healthy grid.
-            _sogi_v.init(500.0F, _Ts);
-            _sogi_i.init(_current_sogi_kr, _Ts);
+            resetQuadratureFilters();
+            _w_tune = _w_ref;
             _theta = 0.0F;
             _Vdq = {};
+            _Vdq_ff = {};
             _pll_pi.reset();
         }
     }
