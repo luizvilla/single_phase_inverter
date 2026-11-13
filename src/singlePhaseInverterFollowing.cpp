@@ -28,6 +28,9 @@
 namespace {
 /** Voltage SOGI resonance gain (rad/s). */
 constexpr float32_t VOLTAGE_SOGI_KR = 500.0F;
+/** Feedforward filter (setFeedforwardFilter): notch SOGI gain at 2ω (rad/s; width about Kr) and DC-block time constant (s). */
+constexpr float32_t FF_NOTCH_KR = 50.0F;
+constexpr float32_t FF_DC_TAU = 0.2F;
 /** Time constant of the low-pass on the PLL frequency that tunes the SOGI and the APFs (s). Tuned to the
  * instantaneous estimate, a PLL frequency above the grid's makes both filters lead, which raises Vq and the
  * estimate further: loop gain Kp·V·(2/Kr + 1/(2·w0)) = 0.84 (SOGI) + 0.33 (APF) = 1.17 > 1, a limit cycle between
@@ -193,7 +196,27 @@ INV_FAST_CODE float32_t singlePhaseInverterFollowing::calculateDuty(float32_t vg
     const float32_t w_sogi = fminf(fmaxf(_w_tune, 0.95F * _w_ref), 1.05F * _w_ref);
     const float32_t v_alpha = _sogi_v.calc(vgrid_meas, w_sogi).alpha;
     _Vab = {v_alpha, _apf_v.calc(v_alpha, w_sogi), 0.0F};
-    const clarke_t vab_measured = {vgrid_meas, _apf_v_ff.calc(vgrid_meas, w_sogi), 0.0F};
+    // Feedforward filter: DC block and 2ω notch, then the complex gain that restores the fundamental (z' = C·z with
+    // z = α + jβ; C = (1 + j·Kr/3ω)(1 − j/ωτ), exact for the fundamental at the tuned frequency).
+    // The notch is tuned on the period-averaged PLL frequency once the sync window is full: a 2ω component on the grid
+    // makes the PLL frequency ripple at ω, which would move a narrow notch off its target.
+    float32_t v_ff = vgrid_meas;
+    const float32_t w_notch = isSyncWindowFull() ? fminf(fmaxf(_w_avg, 0.95F * _w_ref), 1.05F * _w_ref) : w_sogi;
+    if (_ff_filter) {
+        _ff_dc += (vgrid_meas - _ff_dc) * (_Ts / FF_DC_TAU);
+        const float32_t x1 = vgrid_meas - _ff_dc;
+        // The discrete SOGI alpha leads its input by one sample (ω·Ts): subtracting the previous sample's alpha aligns it.
+        v_ff = x1 - _ff_notch_prev;
+        _ff_notch_prev = _sogi_ff_notch.calc(x1, 2.0F * w_notch).alpha;
+    }
+    clarke_t vab_measured = {v_ff, _apf_v_ff.calc(v_ff, w_sogi), 0.0F};
+    if (_ff_filter) {
+        const float32_t a = FF_NOTCH_KR / (3.0F * w_notch), b = 1.0F / (w_notch * FF_DC_TAU);
+        const float32_t cr = 1.0F + a * b, ci = a - b;
+        const float32_t al = vab_measured.alpha, be = vab_measured.beta;
+        vab_measured.alpha = cr * al - ci * be;
+        vab_measured.beta = cr * be + ci * al;
+    }
     _Vab_ff = _ff_source == FeedforwardSource::SOGI ? _Vab : vab_measured;
     _Iab = {igrid_meas, _apf_i.calc(igrid_meas, w_sogi), 0.0F};
     INV_TIMING_PROBE(2);
@@ -334,6 +357,9 @@ dqo_t singlePhaseInverterFollowing::getVdqFeedforward() {
 
 void singlePhaseInverterFollowing::resetQuadratureFilters() {
     _sogi_v.init(VOLTAGE_SOGI_KR, _Ts);
+    _sogi_ff_notch.init(FF_NOTCH_KR, _Ts);
+    _ff_dc = 0.0F;
+    _ff_notch_prev = 0.0F;
     _apf_v.init(_Ts);
     _apf_v_ff.init(_Ts);
     _apf_i.init(_Ts);
@@ -536,6 +562,17 @@ INV_FAST_CODE void singlePhaseInverterFollowing::setFeedforwardSource(Feedforwar
 }
 
 FeedforwardSource singlePhaseInverterFollowing::getFeedforwardSource() const { return _ff_source; }
+
+INV_FAST_CODE void singlePhaseInverterFollowing::setFeedforwardFilter(bool enabled) {
+    if (enabled && !_ff_filter) {
+        _ff_dc = 0.0F;
+        _ff_notch_prev = 0.0F;
+        _sogi_ff_notch.init(FF_NOTCH_KR, _Ts);
+    }
+    _ff_filter = enabled;
+}
+
+bool singlePhaseInverterFollowing::getFeedforwardFilter() const { return _ff_filter; }
 
 INV_FAST_CODE void singlePhaseInverterFollowing::setCurrentLoopFromConnect(bool enabled) { _current_loop_from_connect = enabled; }
 

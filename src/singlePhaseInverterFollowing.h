@@ -333,6 +333,20 @@ public:
     FeedforwardSource getFeedforwardSource() const;
 
     /**
+     * @brief Filter the measured feedforward: a DC block (first order, τ = 0.2 s) and a notch at twice the PLL frequency
+     * (the voltage minus a SOGI tuned at 2ω, Kr = 50 rad/s), then a fixed complex gain that restores the fundamental
+     * exactly in steady state, C = (1 + j·Kr / 3ω)(1 − j / ωτ). Once connected, the measured voltage is the inverter's own
+     * node, and copying it keeps any internal DC or 100 Hz alive (Core2 worklog 2026-11-13); the odd harmonics are still
+     * copied. Applies to the MEASURED source.
+     * @note Off by default. Turning it on clears the filters (they settle in about 0.1 s for the notch, 1 s for the DC
+     * block); switch it before the relay closes. Preserved across init(). Call from the control task.
+     */
+    void setFeedforwardFilter(bool enabled);
+
+    /** @brief True while the feedforward filter is on. */
+    bool getFeedforwardFilter() const;
+
+    /**
      * @brief Run the current PI (zero reference) from GRID_CONNECT, i.e. from the relay request, instead of
      * from GRID_CONNECTED. Default false. With the relay open the measured current is about zero, so the PI
      * stays at zero until the contact, then holds the current from the first sample.
@@ -544,6 +558,10 @@ private:
     float32_t _output_phase_advance = 0.0F; ///< Output-rotation advance (control periods).
     float32_t _feedforward_gain = 1.0F; ///< Scale of the grid-voltage feedforward.
     FeedforwardSource _ff_source = FeedforwardSource::MEASURED; ///< Signals of the voltage feedforward.
+    bool _ff_filter = false;            ///< DC block and 2ω notch on the measured feedforward (setFeedforwardFilter).
+    float32_t _ff_dc = 0.0F;            ///< DC estimate of the measured voltage (V).
+    float32_t _ff_notch_prev = 0.0F;    ///< Last 2ω SOGI alpha, subtracted one sample later (cancels its one-sample lead).
+    Sogi _sogi_ff_notch;                ///< 2ω component of the measured voltage, subtracted (notch).
     bool _current_loop_from_connect = false; ///< Current PI from GRID_CONNECT.
     float32_t _pll_freeze_remaining = 0.0F;  ///< PLL freeze left (s).
     float32_t _pll_freeze_w = 0.0F;          ///< Latched frequency during the freeze (rad/s).
