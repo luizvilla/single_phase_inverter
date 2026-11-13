@@ -347,6 +347,27 @@ public:
     bool getFeedforwardFilter() const;
 
     /**
+     * @brief DC current loop: removes the DC component of the line current, which the dq current PIs cannot see.
+     * While connected (GRID_CONNECT with the current loop, GRID_CONNECTED, RUN, STOPPING) a correction
+     * v_dc −= Ki·(i_meas − i_zero)·Ts, limited to ±limit, is added to the output voltage before the duty. i_zero is the
+     * current sensor's offset, learnt (τ 0.5 s) while the relay is open (OFF, VOLTAGE_SYNC, PWM_WAIT, PWM_SETTLE), where
+     * the true line current is zero. The correction resets outside the connected modes.
+     * @param ki Integral gain in V/(A·s); finite and positive. Default 100: τ ≈ R/Ki behind a resistive grid R.
+     * @param limit Largest correction in volts; finite and positive. Default 10.
+     * @return False for invalid values (configuration unchanged), true otherwise.
+     * @note Off by default. Use with the feedforward filter, which keeps the feedforward from copying the DC this loop
+     * puts on the node. Preserved across init(). Call from the control task.
+     */
+    bool setDcCurrentLoop(bool enabled, float32_t ki = 100.0F, float32_t limit = 10.0F);
+
+    /** @brief True while the DC current loop is on. */
+    bool getDcCurrentLoop() const;
+
+    /** @brief The DC current loop's present correction (V), and the learnt current-sensor offset (A). */
+    float32_t getDcCorrection() const;
+    float32_t getCurrentZero() const;
+
+    /**
      * @brief Run the current PI (zero reference) from GRID_CONNECT, i.e. from the relay request, instead of
      * from GRID_CONNECTED. Default false. With the relay open the measured current is about zero, so the PI
      * stays at zero until the contact, then holds the current from the first sample.
@@ -562,6 +583,11 @@ private:
     float32_t _ff_dc = 0.0F;            ///< DC estimate of the measured voltage (V).
     float32_t _ff_notch_prev = 0.0F;    ///< Last 2ω SOGI alpha, subtracted one sample later (cancels its one-sample lead).
     Sogi _sogi_ff_notch;                ///< 2ω component of the measured voltage, subtracted (notch).
+    bool _dc_loop = false;              ///< DC current loop on (setDcCurrentLoop).
+    float32_t _dc_ki = 100.0F;          ///< Its integral gain (V/(A·s)).
+    float32_t _dc_limit = 10.0F;        ///< Its correction limit (V).
+    float32_t _dc_corr = 0.0F;          ///< Its correction added to the output voltage (V).
+    float32_t _i_zero = 0.0F;           ///< Current-sensor offset learnt with the relay open (A).
     bool _current_loop_from_connect = false; ///< Current PI from GRID_CONNECT.
     float32_t _pll_freeze_remaining = 0.0F;  ///< PLL freeze left (s).
     float32_t _pll_freeze_w = 0.0F;          ///< Latched frequency during the freeze (rad/s).

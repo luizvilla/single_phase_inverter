@@ -31,6 +31,8 @@ constexpr float32_t VOLTAGE_SOGI_KR = 500.0F;
 /** Feedforward filter (setFeedforwardFilter): notch SOGI gain at 2ω (rad/s; width about Kr) and DC-block time constant (s). */
 constexpr float32_t FF_NOTCH_KR = 50.0F;
 constexpr float32_t FF_DC_TAU = 0.2F;
+/** DC current loop: time constant of the current-sensor offset learnt with the relay open (s). */
+constexpr float32_t DC_ZERO_TAU = 0.5F;
 /** Time constant of the low-pass on the PLL frequency that tunes the SOGI and the APFs (s). Tuned to the
  * instantaneous estimate, a PLL frequency above the grid's makes both filters lead, which raises Vq and the
  * estimate further: loop gain Kp·V·(2/Kr + 1/(2·w0)) = 0.84 (SOGI) + 0.33 (APF) = 1.17 > 1, a limit cycle between
@@ -291,6 +293,19 @@ INV_FAST_CODE float32_t singlePhaseInverterFollowing::calculateDuty(float32_t vg
     if (_external_ff_enabled && !ff_hold && !_contact_passed && (ff_modes || current_loop) && _mode != VSI_FAULT) {
         _Vab_output = Transform::rotation_to_clarke(pi_out, out_angle);
         _Vab_output.alpha += _feedforward_gain * _external_ff_v;
+    }
+
+    // DC current loop: the dq PIs see a DC line current as a ω ripple and never remove it; an integrator on the
+    // measured current (minus the sensor offset learnt with the relay open) adds a DC correction while connected.
+    const bool relay_open_modes = _mode == VSI_OFF || _mode == VSI_VOLTAGE_SYNC || _mode == VSI_PWM_WAIT ||
+                                  _mode == VSI_PWM_SETTLE;
+    if (relay_open_modes) _i_zero += (igrid_meas - _i_zero) * (_Ts / DC_ZERO_TAU);
+    if (_dc_loop && current_loop && _mode != VSI_FAULT) {
+        _dc_corr -= _dc_ki * (igrid_meas - _i_zero) * _Ts;
+        _dc_corr = fminf(fmaxf(_dc_corr, -_dc_limit), _dc_limit);
+        _Vab_output.alpha += _dc_corr;
+    } else {
+        _dc_corr = 0.0F;
     }
 
     _Vond = _Vab_output.alpha;
@@ -573,6 +588,19 @@ INV_FAST_CODE void singlePhaseInverterFollowing::setFeedforwardFilter(bool enabl
 }
 
 bool singlePhaseInverterFollowing::getFeedforwardFilter() const { return _ff_filter; }
+
+INV_FAST_CODE bool singlePhaseInverterFollowing::setDcCurrentLoop(bool enabled, float32_t ki, float32_t limit) {
+    if (!inverter_validation::positive(ki) || !inverter_validation::positive(limit)) return false;
+    _dc_loop = enabled;
+    _dc_ki = ki;
+    _dc_limit = limit;
+    if (!enabled) _dc_corr = 0.0F;
+    return true;
+}
+
+bool singlePhaseInverterFollowing::getDcCurrentLoop() const { return _dc_loop; }
+float32_t singlePhaseInverterFollowing::getDcCorrection() const { return _dc_corr; }
+float32_t singlePhaseInverterFollowing::getCurrentZero() const { return _i_zero; }
 
 INV_FAST_CODE void singlePhaseInverterFollowing::setCurrentLoopFromConnect(bool enabled) { _current_loop_from_connect = enabled; }
 
