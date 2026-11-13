@@ -187,19 +187,21 @@ INV_FAST_CODE float32_t singlePhaseInverterFollowing::calculateDuty(float32_t vg
     // tolerance. The estimate is low-passed (TUNING_FREQUENCY_TAU: tuned to the instantaneous
     // estimate the loop is unstable) and clamped to the qualification window (±5 %) so
     // the PLL loop cannot run away during lock transients.
-    // Quadrature (ADR 0007): PLL beta = APF(SOGI alpha); feedforward and current beta = APF(measurement).
+    // Quadrature (ADR 0007): PLL beta = APF(SOGI alpha); current beta = APF(measurement); feedforward: the
+    // measurement and its APF (MEASURED), or the PLL pair (SOGI). The feedforward APF runs with either source.
     _w_tune += (_w - _w_tune) * _w_tune_k;
     const float32_t w_sogi = fminf(fmaxf(_w_tune, 0.95F * _w_ref), 1.05F * _w_ref);
     const float32_t v_alpha = _sogi_v.calc(vgrid_meas, w_sogi).alpha;
     _Vab = {v_alpha, _apf_v.calc(v_alpha, w_sogi), 0.0F};
-    _Vab_ff = {vgrid_meas, _apf_v_ff.calc(vgrid_meas, w_sogi), 0.0F};
+    const clarke_t vab_measured = {vgrid_meas, _apf_v_ff.calc(vgrid_meas, w_sogi), 0.0F};
+    _Vab_ff = _ff_source == FeedforwardSource::SOGI ? _Vab : vab_measured;
     _Iab = {igrid_meas, _apf_i.calc(igrid_meas, w_sogi), 0.0F};
     INV_TIMING_PROBE(2);
 
     const float32_t cos_theta = ot_cos(_theta);
     const float32_t sin_theta = ot_sin(_theta);
     _Vdq = park(_Vab, cos_theta, sin_theta);
-    _Vdq_ff = park(_Vab_ff, cos_theta, sin_theta);
+    _Vdq_ff = _ff_source == FeedforwardSource::SOGI ? _Vdq : park(_Vab_ff, cos_theta, sin_theta);
     _Idq = park(_Iab, cos_theta, sin_theta);
     if (!isfinite(_w) || !isfinite(_Vdq.d) || !isfinite(_Vdq.q) ||
         !isfinite(_Vdq_ff.d) || !isfinite(_Vdq_ff.q) ||
@@ -514,6 +516,12 @@ INV_FAST_CODE bool singlePhaseInverterFollowing::setFeedforwardGain(float32_t ga
 }
 
 float32_t singlePhaseInverterFollowing::getFeedforwardGain() const { return _feedforward_gain; }
+
+INV_FAST_CODE void singlePhaseInverterFollowing::setFeedforwardSource(FeedforwardSource source) {
+    _ff_source = source == FeedforwardSource::SOGI ? FeedforwardSource::SOGI : FeedforwardSource::MEASURED;
+}
+
+FeedforwardSource singlePhaseInverterFollowing::getFeedforwardSource() const { return _ff_source; }
 
 INV_FAST_CODE void singlePhaseInverterFollowing::setCurrentLoopFromConnect(bool enabled) { _current_loop_from_connect = enabled; }
 

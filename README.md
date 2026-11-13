@@ -2,7 +2,7 @@
 
 Two independent controllers use quadrature signals and dq PI loops:
 
-- `singlePhaseInverterFollowing` tracks grid phase with a PLL and controls current through synchronization and connection modes. Its quadrature signals come from a first-order all-pass filter (`Apf`, prewarped Tustin, tuned to the clamped PLL frequency): the PLL uses the voltage SOGI alpha and APF(SOGI alpha); the voltage feedforward uses the measured voltage and its APF; the current uses the measured current and its APF.
+- `singlePhaseInverterFollowing` tracks grid phase with a PLL and controls current through synchronization and connection modes. Its quadrature signals come from a first-order all-pass filter (`Apf`, prewarped Tustin, tuned to the clamped PLL frequency): the PLL uses the voltage SOGI alpha and APF(SOGI alpha); the voltage feedforward uses the measured voltage and its APF by default, or the PLL pair (SOGI alpha and APF(SOGI alpha)) after `setFeedforwardSource(FeedforwardSource::SOGI)`, which keeps the measurement noise and the grid harmonics out of the feedforward; the current uses the measured current and its APF.
 - `singlePhaseInverterForming` generates phase from a frequency reference and uses cascaded voltage/current loops.
 
 Each class lives in its own header and source file. Include the specific header,

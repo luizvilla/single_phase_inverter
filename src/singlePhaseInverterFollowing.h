@@ -33,7 +33,9 @@
  * Quadrature signals (Core2 ADR 0007): every beta is built by a first-order all-pass
  * filter (Apf) tuned, like the voltage SOGI, to the PLL frequency low-passed (10 ms) and clamped.
  * - PLL: alpha = voltage SOGI alpha, beta = APF(SOGI alpha); its Vq drives the PLL PI.
- * - Voltage feedforward: alpha = the measured grid voltage, beta = APF(measured voltage).
+ * - Voltage feedforward (setFeedforwardSource): MEASURED (default) alpha = the measured grid voltage,
+ *   beta = APF(measured voltage); SOGI: the PLL pair, alpha = SOGI alpha, beta = APF(SOGI alpha), so the
+ *   feedforward carries neither the measurement noise nor the grid harmonics.
  * - Current: alpha = the measured current, beta = APF(measured current).
  * The current PIs regulate the current dq components and add the feedforward dq voltage,
  * through an explicit operating state machine.
@@ -45,6 +47,12 @@
  * Only d and q components of dqo_t quantities are used or computed here; the
  * zero-sequence component is not maintained.
  */
+/** @brief Signals the voltage feedforward is built from (setFeedforwardSource()). */
+enum class FeedforwardSource : uint8_t {
+    MEASURED = 0, ///< The measured grid voltage and its APF (ADR 0007).
+    SOGI = 1      ///< The PLL pair: voltage SOGI alpha and APF(SOGI alpha).
+};
+
 class singlePhaseInverterFollowing {
 public:
     /**
@@ -110,7 +118,7 @@ public:
     /** @brief Read the PLL voltage signals: alpha = SOGI alpha, beta = APF(SOGI alpha). In volts. */
     clarke_t getVab();
 
-    /** @brief Read the feedforward voltage signals: alpha = measured voltage, beta = APF(alpha). In volts. */
+    /** @brief Read the feedforward voltage signals of the selected source (setFeedforwardSource()). In volts. */
     clarke_t getVabFeedforward();
 
     /** @brief Read the feedforward dq voltage (park of getVabFeedforward()), before the feedforward gain. */
@@ -312,6 +320,18 @@ public:
     float32_t getFeedforwardGain() const;
 
     /**
+     * @brief Choose the signals of the voltage feedforward: MEASURED (default) = park(measured voltage,
+     * APF(measured voltage)); SOGI = park(SOGI alpha, APF(SOGI alpha)), the PLL's own pair.
+     * @note Applied from the next calculateDuty(). The feedforward APF keeps running with either source, so a
+     * switch starts from a settled filter. The hold, the gain and an external feedforward apply to both.
+     * Preserved across init(). Call from the control task.
+     */
+    void setFeedforwardSource(FeedforwardSource source);
+
+    /** @brief Read the feedforward source. */
+    FeedforwardSource getFeedforwardSource() const;
+
+    /**
      * @brief Run the current PI (zero reference) from GRID_CONNECT, i.e. from the relay request, instead of
      * from GRID_CONNECTED. Default false. With the relay open the measured current is about zero, so the PI
      * stays at zero until the contact, then holds the current from the first sample.
@@ -461,14 +481,14 @@ private:
     dqo_t _power;
 
     dqo_t _Vdq;          ///< PLL dq voltage: park(SOGI alpha, APF(SOGI alpha)).
-    dqo_t _Vdq_ff;       ///< Feedforward dq voltage: park(measured voltage, APF(measured voltage)).
+    dqo_t _Vdq_ff;       ///< Feedforward dq voltage: park(_Vab_ff).
     dqo_t _Vdq_output;
 
     dqo_t _Idq;
     dqo_t _Idq_ref;
 
     clarke_t _Vab;       ///< PLL alpha/beta voltage.
-    clarke_t _Vab_ff;    ///< Feedforward alpha/beta voltage.
+    clarke_t _Vab_ff;    ///< Feedforward alpha/beta voltage of the selected source.
     clarke_t _Vab_output;
     clarke_t _Iab;
     float32_t _Vond;
@@ -519,6 +539,7 @@ private:
     float32_t _current_limit = 30.0F;    ///< Current-PI output limit (V).
     float32_t _output_phase_advance = 0.0F; ///< Output-rotation advance (control periods).
     float32_t _feedforward_gain = 1.0F; ///< Scale of the grid-voltage feedforward.
+    FeedforwardSource _ff_source = FeedforwardSource::MEASURED; ///< Signals of the voltage feedforward.
     bool _current_loop_from_connect = false; ///< Current PI from GRID_CONNECT.
     float32_t _pll_freeze_remaining = 0.0F;  ///< PLL freeze left (s).
     float32_t _pll_freeze_w = 0.0F;          ///< Latched frequency during the freeze (rad/s).
