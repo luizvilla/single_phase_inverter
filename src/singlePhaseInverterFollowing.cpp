@@ -52,6 +52,8 @@ int8_t singlePhaseInverterFollowing::init(float32_t V_bus, float32_t grid_Vpk, f
     _w = grid_w0;
     _w_ref = grid_w0;
     _Ts = Ts;
+    _sync_min_delay = static_cast<uint32_t>(lroundf(SYNC_MIN_TIME / Ts));
+    if (_sync_min_delay < 1U) _sync_min_delay = 1U;
     _sync_voltage_tolerance = 0.01F * grid_Vpk;
     resetSyncWindow();
     _theta = 0;

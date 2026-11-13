@@ -91,11 +91,11 @@ connection always passes through one zero-current GRID_CONNECTED control step.
 planned power reduction before disconnecting, belongs to the caller.
 
 Synchronization requires, on values averaged over one grid period (a moving window
-of 2π / (w · Ts) samples, at most 256, where w is the averaged frequency estimate,
+of 2π / (w · Ts) samples, at most 512, where w is the averaged frequency estimate,
 resized once per period; w_ref until the first window is full), positive d
 voltage within 10% of the configured grid peak, frequency within 5% of the frequency
 reference, and `abs(Vq)` below 1% of the configured peak (about 3.3 V at 230 V, a
-phase error of about 0.6°), for 1000 consecutive control calls (100 ms at 10 kHz).
+phase error of about 0.6°), for 100 ms of consecutive control calls (1000 at 10 kHz, 2000 at 20 kHz).
 A real grid's harmonics and any offset on the voltage measurement ripple Vd, Vq and
 the frequency estimate at multiples of the grid frequency; the ripple averages out
 over a period, while a phase jump moves the averages at once. `getVdqAverage()` and
@@ -261,7 +261,7 @@ The runtime example uses FOLLOWING; FORMING tuning is listed for completeness.
 | Inverter RUN reference | d/q current references are applied directly, without clamp, ramp, or power limit. | Define peak/RMS convention, active/reactive priority, total current-vector limit and current/power slew. Verify measured overcurrent protection separately. |
 | Modulation | Controller duty is `0.5 + Valpha/(2*Vbus)` without clamping; example initializes paired unipolar PWM. | Validate factor of two, bridge polarity, actual output amplitude, paired updates, carrier alignment, duty limits and anti-windup when modulation saturates. |
 | PLL/SOGI | SOGI gain 500; PLL tuned for nominal one-period rise time and damping 0.7; correction bounds ±10 nominal angular frequency. | Check gain units, phase/amplitude errors, acquisition, harmonics, DC offset, delay and frequency excursions. PLL bounds can permit unrealistic estimates before alignment is checked. |
-| Initial synchronization | Positive Vd within ±10% nominal peak, abs(Vq)<0.1 V, frequency within ±5%; 1000 consecutive calls. | Confirm tolerances against sensor noise and distortion. At 325 V peak, 0.1 V q corresponds to about 0.018° under the small-angle assumption. Dwell is sample-count based: 100 ms only at 10 kHz. |
+| Initial synchronization | Positive Vd within ±10% nominal peak, abs(Vq)<0.1 V, frequency within ±5%; 100 ms of consecutive calls (counted from Ts). | Confirm tolerances against sensor noise and distortion. At 325 V peak, 0.1 V q corresponds to about 0.018° under the small-angle assumption. |
 | PWM before closure | PWM starts at 50%, then links the computed waveform near neutral (default ±0.01 duty). Configurable measured periods in PWM_SETTLE (default ten, zero holds indefinitely), with application PWM acknowledgement and relay request off. | Validate actual terminal voltage across open contacts and filter settling. Matching measured grid feedforward does not itself prove inverter-side voltage matching. Confirm required duration on hardware. |
 | Relay integration | GRID_CONNECT waits up to 1 s for independent contact feedback. main.cpp has no relay output/feedback path and never requests connection. | Confirm pin mapping, contact delay/bounce, welded-contact detection, zero-crossing strategy and startup feedback plausibility. Never substitute the relay request for physical feedback. |
 | Stop/disconnect | Both dq currents below 0.1 A allow PWM off and relay opening; combined timeout 1 s. Faults drop requests immediately. | Confirm thresholds, decay, filter energy/freewheel paths and relay opening behavior under normal and emergency shutdown. |

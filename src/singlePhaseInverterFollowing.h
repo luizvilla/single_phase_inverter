@@ -70,7 +70,7 @@ public:
      * Updates SOGI signals, dq measurements, current control, and power.
      * FOLLOWING qualifies, on values averaged over one nominal grid period, positive
      * d voltage within 10% of the nominal peak, frequency within 5% of its reference,
-     * and |Vq| below 1% of the nominal peak, for 1000 consecutive calls before
+     * and |Vq| below 1% of the nominal peak, for 100 ms of consecutive calls before
      * allowing a requested connection. requestSync() holds this
      * stage without requesting PWM or relay closure. A connection request first enables
      * PWM at 50 percent duty. After PWM enable acknowledgement, it holds neutral
@@ -540,7 +540,9 @@ private:
      * frequency, and the ripple averages out over a whole period (luizvilla/Core#7). The
      * window spans one period of the averaged frequency (one period of w_ref until the
      * first window is full), resized once per period, so it stays a whole period off-nominal. */
-    static constexpr uint16_t SYNC_WINDOW_MAX = 256; ///< Ring buffer size: most samples in a window.
+    /* 512 holds one period down to 39 Hz at Ts = 50 us (421 samples at 47.5 Hz, the low end of the
+     * +-5 % synchronization window) and down to 19.5 Hz at 100 us. 256 truncated the window at 50 us. */
+    static constexpr uint16_t SYNC_WINDOW_MAX = 512; ///< Ring buffer size: most samples in a window.
     float32_t _sync_win_vd[SYNC_WINDOW_MAX] = {};
     float32_t _sync_win_vq[SYNC_WINDOW_MAX] = {};
     float32_t _sync_win_w[SYNC_WINDOW_MAX] = {};
@@ -567,6 +569,7 @@ private:
     /** @brief Add this step's Vdq and w to the averaging window. */
     void updateSyncWindow();
     const float32_t _disconnect_current_tolerance = 0.1F; ///< Both dq axes (A).
-    uint16_t _sync_delay_counter = 0;
-    const uint16_t _sync_min_delay = 1000;
+    static constexpr float32_t SYNC_MIN_TIME = 0.1F; ///< Synchronized dwell before connecting (s).
+    uint32_t _sync_delay_counter = 0;
+    uint32_t _sync_min_delay = 1000; ///< SYNC_MIN_TIME in calls, set by init() from Ts (1000 at 100 us, 2000 at 50 us).
 };
